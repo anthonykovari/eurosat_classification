@@ -1,0 +1,21 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: eurosat-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./outputs:/app/outputs
+      - ./uploaded:/app/uploaded
+    environment:
+      - SOME_ENV_VAR=some_value
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: eurosat-frontend
+    ports:
+      - "3000:8000"
