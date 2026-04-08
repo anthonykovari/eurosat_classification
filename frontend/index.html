@@ -2,40 +2,249 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>EuroSAT Classifier</title>
+  <title>Satellite Image Classifier</title>
   <style>
-    body { font-family: Arial, sans-serif; max-width: 400px; margin: 50px auto; }
-    label, button { display: block; margin: 15px 0 5px; }
-    #result { margin-top: 20px; font-weight: bold; }
-    img { max-width: 100%; margin-top: 20px; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: #0d1117;
+      color: #e6edf3;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 48px 20px;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 40px;
+    }
+
+    header h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      color: #ffffff;
+    }
+
+    header p {
+      margin-top: 10px;
+      font-size: 0.95rem;
+      color: #8b949e;
+      max-width: 480px;
+      line-height: 1.6;
+    }
+
+    .card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 12px;
+      padding: 32px;
+      width: 100%;
+      max-width: 480px;
+    }
+
+    .upload-area {
+      border: 2px dashed #30363d;
+      border-radius: 8px;
+      padding: 32px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      margin-bottom: 20px;
+      position: relative;
+    }
+
+    .upload-area:hover {
+      border-color: #388bfd;
+      background: #1c2433;
+    }
+
+    .upload-area input[type="file"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+      width: 100%;
+      height: 100%;
+    }
+
+    .upload-icon {
+      font-size: 2rem;
+      margin-bottom: 10px;
+    }
+
+    .upload-area p {
+      color: #8b949e;
+      font-size: 0.9rem;
+    }
+
+    .upload-area .filename {
+      margin-top: 8px;
+      color: #58a6ff;
+      font-size: 0.85rem;
+      font-weight: 500;
+    }
+
+    button {
+      width: 100%;
+      padding: 12px;
+      background: #238636;
+      color: #ffffff;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    button:hover { background: #2ea043; }
+    button:disabled { background: #21262d; color: #484f58; cursor: not-allowed; }
+
+    .result-box {
+      margin-top: 24px;
+      display: none;
+    }
+
+    .result-box.visible { display: block; }
+
+    .result-label {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #8b949e;
+      margin-bottom: 8px;
+    }
+
+    .result-class {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: #3fb950;
+    }
+
+    .preview-img {
+      width: 100%;
+      border-radius: 8px;
+      margin-top: 16px;
+      border: 1px solid #30363d;
+      display: none;
+    }
+
+    .preview-img.visible { display: block; }
+
+    .classes {
+      margin-top: 32px;
+      width: 100%;
+      max-width: 480px;
+    }
+
+    .classes h2 {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #8b949e;
+      margin-bottom: 12px;
+    }
+
+    .class-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .tag {
+      background: #21262d;
+      border: 1px solid #30363d;
+      border-radius: 20px;
+      padding: 4px 12px;
+      font-size: 0.8rem;
+      color: #8b949e;
+    }
+
+    .spinner {
+      display: none;
+      width: 18px;
+      height: 18px;
+      border: 2px solid #ffffff40;
+      border-top-color: #ffffff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      margin: 0 auto;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
-  <h1>EuroSAT Image Classifier</h1>
-  <form id="uploadForm">
-    <label for="fileInput">Choose an image file:</label>
-    <input type="file" id="fileInput" name="file" accept="image/*" required />
-    <button type="submit">Predict</button>
-  </form>
-  <div id="result"></div>
-  <img id="preview" src="" alt="Uploaded image" />
+
+  <header>
+    <h1>Satellite Image Classifier</h1>
+    <p>Upload a satellite image and a ResNet-18 model — fine-tuned on 27,000 labeled images — will classify the land use in under a second.</p>
+  </header>
+
+  <div class="card">
+    <form id="uploadForm">
+      <div class="upload-area" id="uploadArea">
+        <input type="file" id="fileInput" accept="image/*" required />
+        <div class="upload-icon">satellite</div>
+        <p>Click or drag an image here</p>
+        <div class="filename" id="filename"></div>
+      </div>
+      <button type="submit" id="submitBtn">Classify Image</button>
+      <div class="spinner" id="spinner"></div>
+    </form>
+
+    <div class="result-box" id="resultBox">
+      <div class="result-label">Predicted Land Use</div>
+      <div class="result-class" id="resultClass"></div>
+      <img class="preview-img" id="preview" alt="Uploaded satellite image" />
+    </div>
+  </div>
+
+  <div class="classes">
+    <h2>Recognizable Classes</h2>
+    <div class="class-tags">
+      <span class="tag">Annual Crop</span>
+      <span class="tag">Forest</span>
+      <span class="tag">Herbaceous Vegetation</span>
+      <span class="tag">Highway</span>
+      <span class="tag">Industrial</span>
+      <span class="tag">Pasture</span>
+      <span class="tag">Permanent Crop</span>
+      <span class="tag">Residential</span>
+      <span class="tag">River</span>
+      <span class="tag">Sea / Lake</span>
+    </div>
+  </div>
 
   <script>
     const form = document.getElementById('uploadForm');
-    const resultDiv = document.getElementById('result');
-    const previewImg = document.getElementById('preview');
+    const fileInput = document.getElementById('fileInput');
+    const filenameDiv = document.getElementById('filename');
+    const submitBtn = document.getElementById('submitBtn');
+    const spinner = document.getElementById('spinner');
+    const resultBox = document.getElementById('resultBox');
+    const resultClass = document.getElementById('resultClass');
+    const preview = document.getElementById('preview');
+
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files[0];
+      filenameDiv.textContent = file ? file.name : '';
+    });
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      resultDiv.textContent = 'Predicting...';
-      previewImg.src = '';
-
-      const fileInput = document.getElementById('fileInput');
       const file = fileInput.files[0];
-      if (!file) {
-        resultDiv.textContent = 'Please select a file first.';
-        return;
-      }
+      if (!file) return;
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = '';
+      spinner.style.display = 'block';
+      resultBox.classList.remove('visible');
+      preview.classList.remove('visible');
 
       const formData = new FormData();
       formData.append('file', file);
@@ -46,16 +255,23 @@
           body: formData,
         });
 
-        if (!response.ok) throw new Error('Network response was not ok');
+        if (!response.ok) throw new Error('Server error');
 
         const data = await response.json();
-        resultDiv.textContent = `File: ${data.filename} → Predicted Class: ${data.predicted_class}`;
-        
+        resultClass.textContent = data.predicted_class;
+        resultBox.classList.add('visible');
+
         if (data.image_url) {
-          previewImg.src = 'http://localhost:8000' + data.image_url;
+          preview.src = 'http://localhost:8000' + data.image_url;
+          preview.classList.add('visible');
         }
       } catch (error) {
-        resultDiv.textContent = 'Error: ' + error.message;
+        resultClass.textContent = 'Error: ' + error.message;
+        resultBox.classList.add('visible');
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Classify Image';
+        spinner.style.display = 'none';
       }
     });
   </script>
