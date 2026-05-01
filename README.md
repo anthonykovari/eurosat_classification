@@ -8,13 +8,14 @@ A deep learning pipeline that classifies satellite imagery into 10 land-use cate
 |--------|-------------|
 | ![Forest](assets/example_forest.png) | ![Residential](assets/example_residential.png) |
 
-Upload any satellite image through the web UI and the model returns the predicted land-use class in real time.
+Upload any satellite image through the web UI and the model returns the predicted land-use class in real time. Uploaded images are preprocessed with OpenCV (CLAHE contrast enhancement) before inference.
 
 ## Tech Stack
 
 - **Model:** ResNet-18 (ImageNet pre-trained, fine-tuned on EuroSAT RGB)
 - **Training:** PyTorch — weighted random sampling, StepLR scheduler, 25 epochs
 - **Backend:** FastAPI + Uvicorn
+- **Image preprocessing:** OpenCV — CLAHE contrast enhancement before inference
 - **Frontend:** Vanilla HTML/JS
 - **Deployment:** Docker Compose
 

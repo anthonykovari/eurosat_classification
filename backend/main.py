@@ -1,4 +1,6 @@
 import io
+import cv2
+import numpy as np
 import torch
 from torchvision import transforms, models
 from fastapi import FastAPI, File, UploadFile
@@ -54,8 +56,24 @@ class_names = [
     'Pasture', 'PermanentCrop', 'Residential', 'River', 'SeaLake'
 ]
 
-def preprocess_image(image_bytes):
-    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+def apply_clahe(bgr: np.ndarray) -> np.ndarray:
+    """Apply CLAHE per channel in LAB color space to enhance local contrast.
+
+    Satellite images often have low contrast in individual bands; CLAHE
+    normalizes each region independently without washing out the overall tone.
+    """
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    lab[:, :, 0] = clahe.apply(lab[:, :, 0])
+    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+
+def preprocess_image(image_bytes: bytes) -> torch.Tensor:
+    buf = np.frombuffer(image_bytes, dtype=np.uint8)
+    bgr = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+    bgr = apply_clahe(bgr)
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    image = Image.fromarray(rgb)
     return transform(image).unsqueeze(0)
 
 UPLOAD_DIR = "uploaded"
