@@ -38,7 +38,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build backend
-        run: docker build -t eurosat-backend:ci ./backend
+        run: docker build -t eurosat-backend:ci -f backend/Dockerfile .
       - name: Build frontend
         run: docker build -t eurosat-frontend:ci ./frontend
 
