@@ -47,6 +47,16 @@ End-to-end ML platform for satellite image classification. A fine-tuned ResNet-1
 └──────────────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────────────┐
+│                         OBSERVABILITY                                 │
+│                                                                       │
+│  Prometheus :9090  ──scrapes──▶  FastAPI /metrics                    │
+│  Grafana :3001     ──queries──▶  Prometheus                          │
+│                                                                       │
+│  Metrics: request rate · latency p50/p95/p99 · per-class predictions │
+│           model inference time · error rate · uptime                 │
+└──────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────┐
 │                    CLOUD INFRASTRUCTURE (Terraform)                   │
 │                                                                       │
 │  S3 data lake  ·  S3 model registry  ·  ECR (backend + frontend)     │
@@ -66,12 +76,14 @@ End-to-end ML platform for satellite image classification. A fine-tuned ResNet-1
 | ETL orchestration | Apache Airflow 2.9 — weekly DAG, S3-backed data catalog |
 | Training infrastructure | AWS SageMaker Training Jobs |
 | Backend | FastAPI + Uvicorn |
+| Observability | Prometheus · Grafana — inference latency, per-class metrics, error rate |
 | Frontend | Vanilla HTML/JS |
 | Container registry | Amazon ECR |
 | Kubernetes | EKS (prod) · minikube/kind (dev) · Kustomize overlays · HPA |
 | Infrastructure as code | Terraform — S3, ECR, EKS, IAM, GitHub OIDC |
 | CI/CD | GitHub Actions — lint, DAG validation, k8s dry-run, ECR push, EKS rollout |
-| Local dev | Docker Compose — backend + frontend + MLflow |
+| Local dev | Docker Compose — backend + frontend + MLflow + Prometheus + Grafana |
+| Local AWS | LocalStack S3 — fully offline ETL dev without real AWS credentials |
 
 ## Model Performance
 
@@ -130,7 +142,17 @@ End-to-end ML platform for satellite image classification. A fine-tuned ResNet-1
 ├── notebooks/
 │   ├── validate.ipynb              # Per-class accuracy & confusion matrix
 │   └── visual_check.ipynb
-├── docker-compose.yml              # Local: backend + frontend + MLflow
+├── monitoring/
+│   ├── prometheus/
+│   │   └── prometheus.yml          # Scrape config — targets backend:8000/metrics
+│   └── grafana/
+│       ├── provisioning/           # Auto-provisioned datasource + dashboard provider
+│       └── dashboards/
+│           └── eurosat.json        # Inference dashboard (latency, per-class, error rate)
+├── scripts/
+│   ├── localstack_seed.py          # Seeds LocalStack S3 with sample images + model weights
+│   └── ...
+├── docker-compose.yml              # Local: backend + frontend + MLflow + Prometheus + Grafana
 ├── Makefile
 └── requirements-training.txt
 ```
@@ -155,14 +177,21 @@ End-to-end ML platform for satellite image classification. A fine-tuned ResNet-1
 ### 1 · Local development
 
 ```bash
-# Start backend, frontend, and MLflow tracking server
+# Start backend, frontend, MLflow, Prometheus, and Grafana
 make start
 
 # Services:
-#   Frontend  → http://localhost:3000
-#   Backend   → http://localhost:8000
-#   MLflow UI → http://localhost:5001
+#   Frontend    → http://localhost:3000
+#   Backend     → http://localhost:8000
+#   MLflow UI   → http://localhost:5001
+#   Prometheus  → http://localhost:9090
+#   Grafana     → http://localhost:3001  (admin / admin)
 ```
+
+The Grafana dashboard is auto-provisioned on startup — navigate to
+`http://localhost:3001` and open **EuroSAT Inference** to see live
+request rate, latency percentiles, per-class prediction distribution,
+and model inference time.
 
 Train locally and track in MLflow:
 
@@ -173,7 +202,30 @@ MLFLOW_TRACKING_URI=http://localhost:5001 python scripts/train.py --epochs 5
 
 ---
 
-### 2 · Provision cloud infrastructure
+### 2 · Run the ETL pipeline locally (LocalStack — no AWS account needed)
+
+The ETL docker-compose includes a LocalStack S3 instance so you can run the
+full Airflow DAG offline. Airflow is pre-configured to point at LocalStack
+and `eurosat_skip_sagemaker=true` is set so the training step is skipped
+(run `make train-mlflow` instead).
+
+```bash
+# Start Airflow + LocalStack
+make etl-up          # Airflow UI → http://localhost:8080  (admin / admin)
+
+# Seed LocalStack with 250 sample images + model weights
+make localstack-seed
+
+# Trigger the DAG (or use the Airflow UI)
+make etl-trigger
+
+# Watch task states
+make etl-status
+```
+
+---
+
+### 3 · Provision cloud infrastructure
 
 ```bash
 # Export required vars (use Terraform outputs after first apply)
@@ -192,7 +244,7 @@ Key outputs: `data_lake_bucket`, `model_registry_bucket`, `ecr_backend_url`, `ek
 
 ---
 
-### 3 · Run the ETL pipeline
+### 4 · Run the ETL pipeline against real AWS
 
 ```bash
 # Set Airflow Variables before starting (or set them in the UI after)
@@ -220,7 +272,7 @@ The DAG runs weekly. On completion it automatically submits a SageMaker training
 
 ---
 
-### 4 · Submit a training job manually
+### 5 · Submit a training job manually
 
 ```bash
 export EUROSAT_DATA_LAKE_BUCKET=<data_lake_bucket>
@@ -239,7 +291,7 @@ Track experiments at your MLflow server. The best model is automatically registe
 
 ---
 
-### 5 · Deploy to Kubernetes
+### 6 · Deploy to Kubernetes
 
 **Dev (minikube):**
 
@@ -271,7 +323,7 @@ Image tags for prod are pinned at deploy time by the CD pipeline (`kustomize edi
 
 ---
 
-### 6 · Deploy SageMaker inference endpoint
+### 7 · Deploy SageMaker inference endpoint
 
 ```bash
 export EUROSAT_MODEL_REGISTRY_BUCKET=<model_registry_bucket>
@@ -283,7 +335,7 @@ make deploy
 
 ---
 
-### 7 · CI/CD (GitHub Actions)
+### 8 · CI/CD (GitHub Actions)
 
 Push to any branch → **CI** runs automatically:
 - `ruff` lint
