@@ -1,7 +1,7 @@
 fastapi
 uvicorn[standard]
 python-multipart
-numpy
+numpy<2.0
 torch
 torchvision
 opencv-python-headless

@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+patches:
+  - path: backend-service-patch.yaml
+  - path: frontend-service-patch.yaml
+
+images:
+  - name: eurosat-backend
+    newName: eurosat-backend
+    newTag: latest
+  - name: eurosat-frontend
+    newName: eurosat-frontend
+    newTag: latest
+
+configMapGenerator:
+  - name: eurosat-config
+    behavior: merge
+    literals:
+      - DEBUG=true

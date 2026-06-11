@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install ruff
+      - run: ruff check .
+
+  validate-dag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install Airflow + providers
+        run: |
+          pip install "apache-airflow[amazon]==2.9.0" \
+            apache-airflow-providers-amazon \
+            boto3 scikit-learn opencv-python-headless numpy
+      - name: Parse DAG
+        run: python -c "from etl.dags.eurosat_etl_dag import dag; print('DAG OK:', dag.dag_id)"
+
+  build-images:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build backend
+        run: docker build -t eurosat-backend:ci ./backend
+      - name: Build frontend
+        run: docker build -t eurosat-frontend:ci ./frontend
+
+  validate-k8s:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kustomize
+        run: |
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
+      - name: Dry-run dev overlay
+        run: kustomize build k8s/overlays/dev > /dev/null
+      - name: Dry-run prod overlay
+        run: kustomize build k8s/overlays/prod > /dev/null
+
+  validate-terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6"
+      - name: Format check
+        run: terraform -chdir=terraform fmt -check -recursive
+      - name: Validate
+        run: |
+          cd terraform
+          terraform init -backend=false
+          terraform validate

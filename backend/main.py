@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 import torch
 from torchvision import transforms, models
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 import os
@@ -71,6 +71,8 @@ def apply_clahe(bgr: np.ndarray) -> np.ndarray:
 def preprocess_image(image_bytes: bytes) -> torch.Tensor:
     buf = np.frombuffer(image_bytes, dtype=np.uint8)
     bgr = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise ValueError("Could not decode image — ensure the file is a valid JPEG or PNG")
     bgr = apply_clahe(bgr)
     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
     image = Image.fromarray(rgb)
@@ -86,6 +88,11 @@ app.mount("/images", StaticFiles(directory=UPLOAD_DIR), name="images")
 
 import uuid
 
+@app.get("/health")
+async def health():
+    return {"status": "ok", "device": str(device)}
+
+
 @app.post("/predict/")
 async def predict(file: UploadFile = File(...)):
     print(f"Received file: {file.filename}")
@@ -98,7 +105,10 @@ async def predict(file: UploadFile = File(...)):
     with open(file_path, "wb") as f:
         f.write(image_bytes)
 
-    input_tensor = preprocess_image(image_bytes).to(device)
+    try:
+        input_tensor = preprocess_image(image_bytes).to(device)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     with torch.no_grad():
         outputs = model(input_tensor)
         _, preds = torch.max(outputs, 1)
