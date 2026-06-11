@@ -1,0 +1,19 @@
+# Replaces the S3 init container with a minikube hostPath volume.
+# Before applying, expose the local outputs/ directory:
+#   minikube mount ./outputs:/mnt/eurosat-outputs
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: eurosat
+spec:
+  template:
+    spec:
+      initContainers: []
+      volumes:
+        - name: model-store
+          hostPath:
+            path: /mnt/eurosat-outputs
+            type: Directory
+        - name: uploads
+          emptyDir: {}

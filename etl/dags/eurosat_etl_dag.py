@@ -261,8 +261,14 @@ with DAG(
     def trigger_training(load_meta: dict, run_date: str) -> dict:
         """
         Submit a SageMaker Training Job once the new dataset is registered.
-        The job runs asynchronously; monitor it in the SageMaker console.
+        Set Airflow Variable 'eurosat_skip_sagemaker' = 'true' to skip in
+        local/dev environments where SageMaker is not available.
         """
+        if Variable.get("eurosat_skip_sagemaker", default_var="false").lower() == "true":
+            log.info("eurosat_skip_sagemaker=true — skipping SageMaker training (local/dev mode)")
+            log.info("Run 'make train-mlflow' to train locally and log to MLflow instead.")
+            return {"job_name": None, "status": "skipped"}
+
         import boto3
         import sagemaker
         from sagemaker.pytorch import PyTorch

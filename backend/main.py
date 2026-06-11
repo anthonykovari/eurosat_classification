@@ -1,4 +1,5 @@
 import os
+import time
 import uuid
 
 import cv2
@@ -8,9 +9,25 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
+from prometheus_client import Counter, Gauge, Histogram, Info
+from prometheus_fastapi_instrumentator import Instrumentator
 from torchvision import models, transforms
 
 app = FastAPI()
+
+Instrumentator().instrument(app).expose(app)
+
+PREDICTION_COUNTER = Counter(
+    "eurosat_predictions_total",
+    "Predictions by class",
+    ["predicted_class"],
+)
+INFERENCE_DURATION = Histogram(
+    "eurosat_inference_seconds",
+    "Model forward-pass duration",
+    buckets=[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0],
+)
+APP_INFO = Info("eurosat", "EuroSAT backend metadata")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -35,6 +52,8 @@ model.fc = torch.nn.Linear(num_ftrs, 10)
 model.load_state_dict(torch.load(model_path, map_location=device))
 model.to(device)
 model.eval()
+
+APP_INFO.info({"device": str(device), "model": "resnet18", "dataset": "eurosat"})
 
 mean = [0.344, 0.380, 0.408]
 std = [0.177, 0.150, 0.142]
@@ -100,11 +119,14 @@ async def predict(file: UploadFile = File(...)):
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
+    t0 = time.perf_counter()
     with torch.no_grad():
         outputs = model(input_tensor)
         _, preds = torch.max(outputs, 1)
+    INFERENCE_DURATION.observe(time.perf_counter() - t0)
 
     predicted_class = class_names[preds.item()]
+    PREDICTION_COUNTER.labels(predicted_class=predicted_class).inc()
     return {
         "filename": safe_filename,
         "predicted_class": predicted_class,

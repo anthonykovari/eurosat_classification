@@ -11,18 +11,44 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth
-    AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
-    AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
-    AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
-    AIRFLOW_VAR_EUROSAT_S3_BUCKET: ${EUROSAT_S3_BUCKET:-eurosat-data-lake}
+    # LocalStack — boto3 >=1.28 picks up AWS_ENDPOINT_URL automatically
+    AWS_ENDPOINT_URL: http://localstack:4566
+    AWS_ACCESS_KEY_ID: test
+    AWS_SECRET_ACCESS_KEY: test
+    AWS_DEFAULT_REGION: us-east-1
+    # Airflow Variables pre-seeded for local dev
+    AIRFLOW_VAR_EUROSAT_S3_BUCKET: eurosat-data-lake
+    AIRFLOW_VAR_EUROSAT_DATA_LAKE_BUCKET: eurosat-data-lake
+    AIRFLOW_VAR_EUROSAT_MODEL_REGISTRY_BUCKET: eurosat-model-registry
+    AIRFLOW_VAR_EUROSAT_SAGEMAKER_ROLE_ARN: arn:aws:iam::000000000000:role/local-placeholder
+    AIRFLOW_VAR_EUROSAT_MLFLOW_TRACKING_URI: ""
+    AIRFLOW_VAR_EUROSAT_SKIP_SAGEMAKER: "true"
   volumes:
     - ./dags:/opt/airflow/dags
     - airflow-logs:/opt/airflow/logs
   depends_on:
     postgres:
       condition: service_healthy
+    localstack:
+      condition: service_healthy
 
 services:
+  localstack:
+    image: localstack/localstack:3.4
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: s3
+      AWS_DEFAULT_REGION: us-east-1
+      LOCALSTACK_HOST: localstack
+    volumes:
+      - localstack-data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   postgres:
     image: postgres:15
     environment:
@@ -38,14 +64,15 @@ services:
 
   airflow-init:
     <<: *airflow-common
-    command: >
-      bash -c "
+    command:
+      - bash
+      - -c
+      - |
         airflow db init &&
-        airflow users create
-          --username admin --password admin
-          --firstname Admin --lastname User
+        airflow users create \
+          --username admin --password admin \
+          --firstname Admin --lastname User \
           --role Admin --email admin@example.com
-      "
     restart: on-failure
 
   airflow-webserver:
@@ -53,6 +80,9 @@ services:
     ports:
       - "8080:8080"
     command: webserver
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
@@ -62,6 +92,9 @@ services:
   airflow-scheduler:
     <<: *airflow-common
     command: scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "airflow", "jobs", "check", "--job-type", "SchedulerJob", "--limit", "1"]
       interval: 30s
@@ -71,3 +104,4 @@ services:
 volumes:
   postgres-data:
   airflow-logs:
+  localstack-data:
