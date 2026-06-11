@@ -56,7 +56,7 @@ def main() -> None:
 
     print(f"Deploying {model_uri} → endpoint '{ENDPOINT_NAME}' on {args.instance}")
 
-    predictor = model.deploy(
+    model.deploy(
         initial_instance_count=1,
         instance_type=args.instance,
         endpoint_name=ENDPOINT_NAME,

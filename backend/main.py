@@ -1,22 +1,18 @@
-import io
+import os
+import uuid
+
 import cv2
 import numpy as np
 import torch
-from torchvision import transforms, models
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
-import os
-import sys
-from fastapi.middleware.cors import CORSMiddleware
-import uuid
-
+from torchvision import models, transforms
 
 app = FastAPI()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
 
 app.add_middleware(
     CORSMiddleware,
@@ -26,13 +22,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# Get model path relative to script
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(script_dir, ".."))
 model_path = os.path.join(project_root, "outputs", "resnet18_eurosat.pth")
 
-# Fallback path inside Docker container (workdir /app)
 if not os.path.isfile(model_path):
     model_path = "/app/outputs/resnet18_eurosat.pth"
 
@@ -56,6 +49,7 @@ class_names = [
     'Pasture', 'PermanentCrop', 'Residential', 'River', 'SeaLake'
 ]
 
+
 def apply_clahe(bgr: np.ndarray) -> np.ndarray:
     """Apply CLAHE per channel in LAB color space to enhance local contrast.
 
@@ -78,15 +72,12 @@ def preprocess_image(image_bytes: bytes) -> torch.Tensor:
     image = Image.fromarray(rgb)
     return transform(image).unsqueeze(0)
 
+
 UPLOAD_DIR = "uploaded"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# Serve uploaded images
 app.mount("/images", StaticFiles(directory=UPLOAD_DIR), name="images")
 
-...
-
-import uuid
 
 @app.get("/health")
 async def health():
@@ -97,8 +88,7 @@ async def health():
 async def predict(file: UploadFile = File(...)):
     print(f"Received file: {file.filename}")
     image_bytes = await file.read()
-    
-    # Save image with a safe unique name
+
     ext = os.path.splitext(file.filename)[-1]
     safe_filename = f"{uuid.uuid4()}{ext}"
     file_path = os.path.join(UPLOAD_DIR, safe_filename)
@@ -109,6 +99,7 @@ async def predict(file: UploadFile = File(...)):
         input_tensor = preprocess_image(image_bytes).to(device)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+
     with torch.no_grad():
         outputs = model(input_tensor)
         _, preds = torch.max(outputs, 1)
