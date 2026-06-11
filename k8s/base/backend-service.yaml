@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  labels:
+    app: eurosat
+    component: backend
+spec:
+  selector:
+    app: eurosat
+    component: backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+  type: ClusterIP

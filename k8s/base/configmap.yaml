@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: eurosat-config
+data:
+  MODEL_PATH: /app/outputs/resnet18_eurosat.pth
+  API_PORT: "8000"
+  DEBUG: "false"
+  S3_BUCKET: eurosat-model-registry
+  S3_MODEL_KEY: models/resnet18_eurosat.pth
+  AWS_DEFAULT_REGION: us-east-1

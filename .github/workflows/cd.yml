@@ -1,0 +1,88 @@
+name: CD
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_BACKEND_REPO: eurosat-backend
+  ECR_FRONTEND_REPO: eurosat-frontend
+  EKS_CLUSTER: eurosat-prod
+
+jobs:
+  push-to-ecr:
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.tag.outputs.tag }}
+      ecr-registry: ${{ steps.ecr-login.outputs.registry }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Compute image tag
+        id: tag
+        run: echo "tag=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+
+      - name: Build and push backend
+        run: |
+          URI=${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_BACKEND_REPO }}
+          docker build -t $URI:${{ steps.tag.outputs.tag }} -t $URI:latest ./backend
+          docker push $URI:${{ steps.tag.outputs.tag }}
+          docker push $URI:latest
+
+      - name: Build and push frontend
+        run: |
+          URI=${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_FRONTEND_REPO }}
+          docker build -t $URI:${{ steps.tag.outputs.tag }} -t $URI:latest ./frontend
+          docker push $URI:${{ steps.tag.outputs.tag }}
+          docker push $URI:latest
+
+  deploy-to-eks:
+    runs-on: ubuntu-latest
+    needs: push-to-ecr
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install kustomize
+        run: |
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+
+      - name: Pin image tags and deploy
+        env:
+          REGISTRY: ${{ needs.push-to-ecr.outputs.ecr-registry }}
+          TAG: ${{ needs.push-to-ecr.outputs.image-tag }}
+        run: |
+          cd k8s/overlays/prod
+          kustomize edit set image \
+            eurosat-backend=$REGISTRY/${{ env.ECR_BACKEND_REPO }}:$TAG \
+            eurosat-frontend=$REGISTRY/${{ env.ECR_FRONTEND_REPO }}:$TAG
+          kustomize build . | kubectl apply -f -
+          kubectl rollout status deployment/backend  -n eurosat --timeout=300s
+          kubectl rollout status deployment/frontend -n eurosat --timeout=300s

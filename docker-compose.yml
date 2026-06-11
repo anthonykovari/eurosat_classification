@@ -3,14 +3,14 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    image: eurosat-api
+    image: eurosat-backend
     ports:
       - "8000:8000"
     volumes:
       - ./outputs:/app/outputs
       - ./uploaded:/app/uploaded
     environment:
-      - SOME_ENV_VAR=some_value
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
 
   frontend:
     build:
@@ -19,3 +19,19 @@ services:
     image: eurosat-frontend
     ports:
       - "3000:8000"
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.12.1
+    ports:
+      - "5001:5000"
+    command: >
+      mlflow server
+        --host 0.0.0.0
+        --port 5000
+        --backend-store-uri sqlite:////mlflow/mlflow.db
+        --default-artifact-root /mlflow/artifacts
+    volumes:
+      - mlflow-data:/mlflow
+
+volumes:
+  mlflow-data:
