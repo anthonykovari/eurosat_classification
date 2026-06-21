@@ -1,0 +1,11 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: eurosat
+spec:
+  template:
+    spec:
+      containers:
+        - name: frontend
+          imagePullPolicy: Never
