@@ -1,6 +1,5 @@
 # Replaces the S3 init container with a minikube hostPath volume.
-# Before applying, expose the local outputs/ directory:
-#   minikube mount ./outputs:/mnt/eurosat-outputs
+# make k8s-minikube-deploy copies the model into the node via minikube cp.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -9,11 +8,17 @@ metadata:
 spec:
   template:
     spec:
-      initContainers: []
+      initContainers:
+        - name: download-model
+          $patch: delete
       volumes:
+        - $patch: replace
         - name: model-store
           hostPath:
             path: /mnt/eurosat-outputs
             type: Directory
         - name: uploads
           emptyDir: {}
+      containers:
+        - name: backend
+          imagePullPolicy: Never

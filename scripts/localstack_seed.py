@@ -1,32 +1,35 @@
 """
-Seed LocalStack with the S3 buckets and data needed to run the local stack.
+Seed LocalStack with the S3 bucket needed by the Chicago land-use pipeline.
 
 What this does:
-  1. Creates the data lake and model registry buckets
-  2. Uploads a small subset of local EuroSAT images as the raw dataset
-     (avoids downloading 27k images during the Airflow extract task)
-  3. Uploads the trained model weights to the model registry
+  1. Creates the chicago-land-use bucket
+  2. Optionally uploads a minimal synthetic catalog so the backend /timeseries
+     endpoint returns something without running the full Airflow DAG first
 
 Run once before triggering the Airflow DAG:
-  python scripts/localstack_seed.py
+  python3 scripts/localstack_seed.py
 
-The Airflow extract task checks S3 first and skips the internet download
-when it finds data already present — that's what makes this work.
+After seeding, trigger the DAG to populate real classification data:
+  make etl-trigger
 """
 
 import argparse
 import json
-from datetime import date
 from pathlib import Path
 
 import boto3
 from botocore.exceptions import ClientError
 
-ROOT = Path(__file__).resolve().parent.parent
-LOCAL_DATA_DIR = ROOT / "data" / "eurosat" / "2750"
-LOCAL_MODEL_PATH = ROOT / "outputs" / "resnet18_eurosat.pth"
-DATA_LAKE_BUCKET = "eurosat-data-lake"
-MODEL_REGISTRY_BUCKET = "eurosat-model-registry"
+BUCKET = "chicago-land-use"
+
+CLASS_NAMES = [
+    "AnnualCrop", "Forest", "HerbaceousVegetation", "Highway", "Industrial",
+    "Pasture", "PermanentCrop", "Residential", "River", "SeaLake",
+]
+CLASS_COLORS = [
+    "#e6b800", "#1a7a1a", "#66cc66", "#888888", "#cc4400",
+    "#99cc44", "#ff9933", "#4488cc", "#3399ff", "#0044aa",
+]
 
 
 def make_client(endpoint: str):
@@ -51,70 +54,68 @@ def create_bucket(s3, name: str) -> None:
             raise
 
 
-def seed_raw_images(s3, run_date: str, per_class: int) -> int:
-    if not LOCAL_DATA_DIR.exists():
-        print(f"\nWARNING: {LOCAL_DATA_DIR} not found.")
-        print("Run 'python scripts/download_data.py' first, then re-run this script.")
-        return 0
+def seed_placeholder_catalog(s3) -> None:
+    """
+    Write a minimal catalog so the backend has something to serve before
+    the first full ETL run completes.
+    """
+    import random
+    random.seed(42)
+    timeseries = []
+    for year in range(2019, 2025):
+        classes = {name: round(random.uniform(2, 30), 2) for name in CLASS_NAMES}
+        total = sum(classes.values())
+        classes = {k: round(v / total * 100, 2) for k, v in classes.items()}
+        timeseries.append({"year": year, "total_tiles": 26100, "classes": classes})
 
-    total = 0
-    for cls_dir in sorted(LOCAL_DATA_DIR.iterdir()):
-        if not cls_dir.is_dir():
-            continue
-        images = sorted(cls_dir.glob("*.jpg"))[:per_class]
-        for img in images:
-            key = f"data/raw/{run_date}/{cls_dir.name}/{img.name}"
-            s3.upload_file(str(img), DATA_LAKE_BUCKET, key)
-            total += 1
-        print(f"  {cls_dir.name:<25} {len(images)} images")
-
-    return total
-
-
-def seed_model(s3) -> None:
-    if not LOCAL_MODEL_PATH.exists():
-        print(f"  WARNING: {LOCAL_MODEL_PATH} not found — skipping model seed")
-        return
-    key = "models/resnet18_eurosat.pth"
-    s3.upload_file(str(LOCAL_MODEL_PATH), MODEL_REGISTRY_BUCKET, key)
-    print(f"  uploaded s3://{MODEL_REGISTRY_BUCKET}/{key}")
+    catalog = {
+        "aoi": {"bbox": [-88.4, 41.45, -87.5, 42.75], "name": "Chicagoland"},
+        "class_names": CLASS_NAMES,
+        "class_colors": CLASS_COLORS,
+        "timeseries": timeseries,
+        "changes": [],
+        "_note": "placeholder — run the chicago_land_use_pipeline DAG for real data",
+    }
+    s3.put_object(
+        Bucket=BUCKET,
+        Key="catalog/latest.json",
+        Body=json.dumps(catalog, indent=2).encode(),
+        ContentType="application/json",
+    )
+    print(f"  wrote placeholder catalog → s3://{BUCKET}/catalog/latest.json")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--endpoint", default="http://localhost:4566",
-                        help="LocalStack S3 endpoint (default: http://localhost:4566)")
-    parser.add_argument("--images-per-class", type=int, default=25,
-                        help="Images per class to seed (default: 25, × 10 classes = 250 total)")
+    parser.add_argument(
+        "--endpoint", default="http://localhost:4566",
+        help="LocalStack S3 endpoint (default: http://localhost:4566)",
+    )
+    parser.add_argument(
+        "--no-catalog", action="store_true",
+        help="Skip writing the placeholder catalog",
+    )
     args = parser.parse_args()
 
     s3 = make_client(args.endpoint)
-    run_date = str(date.today())
 
-    print(f"LocalStack endpoint : {args.endpoint}")
-    print(f"Run date            : {run_date}")
-    print(f"Images per class    : {args.images_per_class}\n")
+    print(f"LocalStack endpoint: {args.endpoint}\n")
+    print("Creating bucket:")
+    create_bucket(s3, BUCKET)
 
-    print("Creating buckets:")
-    create_bucket(s3, DATA_LAKE_BUCKET)
-    create_bucket(s3, MODEL_REGISTRY_BUCKET)
-
-    print(f"\nSeeding raw images → s3://{DATA_LAKE_BUCKET}/data/raw/{run_date}/")
-    count = seed_raw_images(s3, run_date, args.images_per_class)
-    print(f"  total: {count} images")
-
-    print(f"\nSeeding model weights → s3://{MODEL_REGISTRY_BUCKET}/")
-    seed_model(s3)
+    if not args.no_catalog:
+        print("\nSeeding placeholder catalog:")
+        seed_placeholder_catalog(s3)
 
     print(f"""
-Done. Trigger the Airflow DAG for date {run_date}:
+Done.  Trigger the Airflow DAG to run the real pipeline:
 
   make etl-trigger
   # or in the Airflow UI: http://localhost:8080
-  # DAG: eurosat_etl_pipeline  |  logical date: {run_date}
+  # DAG: chicago_land_use_pipeline
 
-The extract task will find data already in S3 and skip the internet download.
-The trigger_training task will skip automatically (eurosat_skip_sagemaker=true).
+Set AIRFLOW_VAR_SPRAWL_SKIP_CDSE=false and supply CDSE credentials
+to download live Sentinel-2 imagery instead of synthetic data.
 """)
 
 

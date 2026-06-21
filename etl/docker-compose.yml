@@ -4,6 +4,8 @@ x-airflow-common: &airflow-common
   build:
     context: .
     dockerfile: Dockerfile
+  env_file:
+    - ../.env
   environment:
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
@@ -17,15 +19,17 @@ x-airflow-common: &airflow-common
     AWS_SECRET_ACCESS_KEY: test
     AWS_DEFAULT_REGION: us-east-1
     # Airflow Variables pre-seeded for local dev
-    AIRFLOW_VAR_EUROSAT_S3_BUCKET: eurosat-data-lake
-    AIRFLOW_VAR_EUROSAT_DATA_LAKE_BUCKET: eurosat-data-lake
-    AIRFLOW_VAR_EUROSAT_MODEL_REGISTRY_BUCKET: eurosat-model-registry
-    AIRFLOW_VAR_EUROSAT_SAGEMAKER_ROLE_ARN: arn:aws:iam::000000000000:role/local-placeholder
-    AIRFLOW_VAR_EUROSAT_MLFLOW_TRACKING_URI: ""
-    AIRFLOW_VAR_EUROSAT_SKIP_SAGEMAKER: "true"
+    AIRFLOW_VAR_SPRAWL_S3_BUCKET: chicago-land-use
+    AIRFLOW_VAR_SPRAWL_START_YEAR: "2019"
+    AIRFLOW_VAR_SPRAWL_END_YEAR: "2025"
+    AIRFLOW_VAR_SPRAWL_SKIP_CDSE: "false"
+    # CDSE_* credentials are loaded from ../.env via env_file above
+    # EuroSAT ResNet-18 weights (mounted from host)
+    MODEL_PATH: /app/outputs/resnet18_eurosat.pth
   volumes:
     - ./dags:/opt/airflow/dags
     - airflow-logs:/opt/airflow/logs
+    - ../outputs:/app/outputs:ro
   depends_on:
     postgres:
       condition: service_healthy

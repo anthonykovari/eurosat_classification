@@ -8,6 +8,7 @@ patches:
   - path: backend-service-patch.yaml
   - path: frontend-service-patch.yaml
   - path: backend-model-patch.yaml
+  - path: frontend-image-patch.yaml
 
 images:
   - name: eurosat-backend

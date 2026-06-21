@@ -2,278 +2,671 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Satellite Image Classifier</title>
+  <title>Chicagoland Land Use Change</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; margin: 0; font-family: 'Segoe UI', Arial, sans-serif; background: #0d1117; color: #e6edf3; overflow: hidden; }
 
-    body {
-      font-family: 'Segoe UI', Arial, sans-serif;
-      background: #0d1117;
-      color: #e6edf3;
-      min-height: 100vh;
+    #map { position: absolute; inset: 0; background: #1a1e24; }
+
+    /* ── floating panels ── */
+    .panel {
+      position: absolute;
+      z-index: 1000;
+      background: rgba(13, 17, 23, 0.88);
+      border: 1px solid rgba(48, 54, 61, 0.8);
+      border-radius: 10px;
+      backdrop-filter: blur(6px);
+      padding: 14px 16px;
+    }
+
+    #title-card {
+      top: 16px; left: 16px;
+      max-width: 260px;
+    }
+    #title-card h1 { font-size: 1rem; font-weight: 700; color: #fff; margin-bottom: 4px; }
+    #title-card p  { font-size: 0.75rem; color: #8b949e; line-height: 1.5; margin: 0; }
+
+    #stats-card {
+      top: 16px; left: 50%; transform: translateX(-50%);
+      min-width: 200px; text-align: center;
+    }
+    #stats-year  { font-size: 1.4rem; font-weight: 700; color: #fff; }
+    #stats-tiles { font-size: 0.75rem; color: #8b949e; margin-top: 2px; }
+
+    #legend {
+      top: 16px; right: 16px;
+      max-width: 170px;
+    }
+    #legend h2 { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px; color: #8b949e; margin-bottom: 10px; }
+    .legend-row { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; font-size: 0.78rem; color: #c9d1d9; }
+    .legend-swatch { width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0; }
+
+    /* ── bottom controls ── */
+    #controls {
+      bottom: 0; left: 0; right: 0;
+      border-radius: 10px 10px 0 0;
+      padding: 16px 24px 20px;
       display: flex;
       flex-direction: column;
-      align-items: center;
-      padding: 48px 20px;
+      gap: 12px;
     }
 
-    header {
-      text-align: center;
-      margin-bottom: 40px;
-    }
+    .ctrl-row { display: flex; align-items: center; gap: 16px; }
 
-    header h1 {
-      font-size: 2rem;
-      font-weight: 700;
-      letter-spacing: 0.5px;
-      color: #ffffff;
-    }
-
-    header p {
-      margin-top: 10px;
-      font-size: 0.95rem;
-      color: #8b949e;
-      max-width: 480px;
-      line-height: 1.6;
-    }
-
-    .card {
-      background: #161b22;
-      border: 1px solid #30363d;
-      border-radius: 12px;
-      padding: 32px;
-      width: 100%;
-      max-width: 480px;
-    }
-
-    .upload-area {
-      border: 2px dashed #30363d;
-      border-radius: 8px;
-      padding: 32px 20px;
-      text-align: center;
-      cursor: pointer;
-      transition: border-color 0.2s, background 0.2s;
-      margin-bottom: 20px;
-      position: relative;
-    }
-
-    .upload-area:hover {
-      border-color: #388bfd;
-      background: #1c2433;
-    }
-
-    .upload-area input[type="file"] {
-      position: absolute;
-      inset: 0;
-      opacity: 0;
-      cursor: pointer;
-      width: 100%;
-      height: 100%;
-    }
-
-    .upload-icon {
-      font-size: 2rem;
-      margin-bottom: 10px;
-    }
-
-    .upload-area p {
-      color: #8b949e;
-      font-size: 0.9rem;
-    }
-
-    .upload-area .filename {
-      margin-top: 8px;
-      color: #58a6ff;
-      font-size: 0.85rem;
-      font-weight: 500;
-    }
-
-    button {
-      width: 100%;
-      padding: 12px;
-      background: #238636;
-      color: #ffffff;
-      border: none;
-      border-radius: 8px;
-      font-size: 1rem;
-      font-weight: 600;
-      cursor: pointer;
-      transition: background 0.2s;
-    }
-
-    button:hover { background: #2ea043; }
-    button:disabled { background: #21262d; color: #484f58; cursor: not-allowed; }
-
-    .result-box {
-      margin-top: 24px;
-      display: none;
-    }
-
-    .result-box.visible { display: block; }
-
-    .result-label {
-      font-size: 0.75rem;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      color: #8b949e;
-      margin-bottom: 8px;
-    }
-
-    .result-class {
-      font-size: 1.5rem;
-      font-weight: 700;
-      color: #3fb950;
-    }
-
-    .preview-img {
-      width: 100%;
-      border-radius: 8px;
-      margin-top: 16px;
-      border: 1px solid #30363d;
-      display: none;
-    }
-
-    .preview-img.visible { display: block; }
-
-    .classes {
-      margin-top: 32px;
-      width: 100%;
-      max-width: 480px;
-    }
-
-    .classes h2 {
-      font-size: 0.8rem;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      color: #8b949e;
-      margin-bottom: 12px;
-    }
-
-    .class-tags {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-    }
-
-    .tag {
+    .mode-btn {
       background: #21262d;
       border: 1px solid #30363d;
-      border-radius: 20px;
-      padding: 4px 12px;
-      font-size: 0.8rem;
+      border-radius: 6px;
       color: #8b949e;
+      padding: 5px 14px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .mode-btn.active { background: #388bfd; border-color: #388bfd; color: #fff; }
+
+    label { font-size: 0.78rem; color: #8b949e; white-space: nowrap; }
+
+    input[type=range] {
+      flex: 1;
+      accent-color: #388bfd;
+      cursor: pointer;
     }
 
-    .spinner {
+    select {
+      background: #21262d;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      color: #e6edf3;
+      padding: 4px 8px;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+
+    .year-label { font-size: 0.85rem; font-weight: 600; color: #e6edf3; min-width: 36px; text-align: center; }
+
+    /* ── compare divider ── */
+    #divider {
+      position: absolute;
+      top: 0; bottom: 0;
+      width: 3px;
+      background: #fff;
+      z-index: 999;
+      cursor: ew-resize;
       display: none;
-      width: 18px;
-      height: 18px;
-      border: 2px solid #ffffff40;
-      border-top-color: #ffffff;
+    }
+    #divider-handle {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 32px; height: 32px;
+      background: #fff;
       border-radius: 50%;
-      animation: spin 0.7s linear infinite;
-      margin: 0 auto;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+      color: #0d1117;
+      font-size: 0.85rem;
+      user-select: none;
     }
 
-    @keyframes spin { to { transform: rotate(360deg); } }
+    /* ── chart panel ── */
+    #chart-panel {
+      bottom: 120px; left: 50%; transform: translateX(-50%);
+      width: min(760px, 92vw);
+      display: none;
+      padding: 20px 24px;
+    }
+    #chart-panel h2 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1px; color: #8b949e; margin-bottom: 14px; }
+    #chart-close { float: right; background: none; border: none; color: #8b949e; cursor: pointer; font-size: 1rem; margin-top: -2px; }
+    .chart-wrap { height: 220px; position: relative; }
+
+    #chart-toggle-btn {
+      background: #21262d;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      color: #8b949e;
+      padding: 5px 14px;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+    #chart-toggle-btn:hover { border-color: #388bfd; color: #388bfd; }
   </style>
 </head>
 <body>
 
-  <header>
-    <h1>Satellite Image Classifier</h1>
-    <p>Upload a satellite image and a ResNet-18 model — fine-tuned on 27,000 labeled images — will classify the land use in under a second.</p>
-  </header>
+<div id="map"></div>
 
-  <div class="card">
-    <form id="uploadForm">
-      <div class="upload-area" id="uploadArea">
-        <input type="file" id="fileInput" accept="image/*" required />
-        <div class="upload-icon">satellite</div>
-        <p>Click or drag an image here</p>
-        <div class="filename" id="filename"></div>
-      </div>
-      <button type="submit" id="submitBtn">Classify Image</button>
-      <div class="spinner" id="spinner"></div>
-    </form>
+<div class="panel" id="title-card">
+  <h1>Chicagoland Land Use</h1>
+  <p>EuroSAT ResNet-18 on Sentinel-2 10 m RGB · 2019–2024</p>
+</div>
 
-    <div class="result-box" id="resultBox">
-      <div class="result-label">Predicted Land Use</div>
-      <div class="result-class" id="resultClass"></div>
-      <img class="preview-img" id="preview" alt="Uploaded satellite image" />
-    </div>
+<div class="panel" id="stats-card">
+  <div id="stats-year">—</div>
+  <div id="stats-tiles"></div>
+</div>
+
+<div class="panel" id="legend">
+  <h2>Land Use</h2>
+  <div id="legend-rows"></div>
+</div>
+
+<div id="divider">
+  <div id="divider-handle">⇔</div>
+</div>
+
+<div class="panel" id="chart-panel">
+  <button id="chart-close">✕</button>
+  <h2>Class Distribution Over Time</h2>
+  <div class="chart-wrap"><canvas id="tsChart"></canvas></div>
+</div>
+
+<div class="panel" id="controls">
+  <div class="ctrl-row">
+    <button class="mode-btn active" id="btn-timeline">Timeline</button>
+    <button class="mode-btn" id="btn-compare">Compare</button>
+    <div style="width:1px;height:20px;background:#30363d;margin:0 4px;flex-shrink:0"></div>
+    <button class="mode-btn active" id="btn-tile">Tile</button>
+    <button class="mode-btn" id="btn-pixel">Pixel</button>
+    <div style="flex:1"></div>
+    <button id="chart-toggle-btn">Chart ↗</button>
   </div>
 
-  <div class="classes">
-    <h2>Recognizable Classes</h2>
-    <div class="class-tags">
-      <span class="tag">Annual Crop</span>
-      <span class="tag">Forest</span>
-      <span class="tag">Herbaceous Vegetation</span>
-      <span class="tag">Highway</span>
-      <span class="tag">Industrial</span>
-      <span class="tag">Pasture</span>
-      <span class="tag">Permanent Crop</span>
-      <span class="tag">Residential</span>
-      <span class="tag">River</span>
-      <span class="tag">Sea / Lake</span>
-    </div>
+  <!-- timeline mode -->
+  <div class="ctrl-row" id="row-timeline">
+    <label>Year</label>
+    <span class="year-label" id="lbl-year">—</span>
+    <input type="range" id="slider-year" min="0" max="0" step="1" value="0" />
+    <label>Opacity</label>
+    <input type="range" id="slider-opacity" min="0" max="100" value="65" style="max-width:120px" />
   </div>
 
-  <script>
-    const form = document.getElementById('uploadForm');
-    const fileInput = document.getElementById('fileInput');
-    const filenameDiv = document.getElementById('filename');
-    const submitBtn = document.getElementById('submitBtn');
-    const spinner = document.getElementById('spinner');
-    const resultBox = document.getElementById('resultBox');
-    const resultClass = document.getElementById('resultClass');
-    const preview = document.getElementById('preview');
+  <!-- compare mode -->
+  <div class="ctrl-row" id="row-compare" style="display:none">
+    <label>From</label>
+    <select id="sel-from"></select>
+    <label>To</label>
+    <select id="sel-to"></select>
+    <label style="margin-left:16px">Opacity</label>
+    <input type="range" id="slider-opacity-cmp" min="0" max="100" value="65" style="max-width:120px" />
+    <label style="margin-left:8px; color:#c9d1d9; font-style:italic; font-size:0.75rem">← drag line on map →</label>
+  </div>
+</div>
 
-    fileInput.addEventListener('change', () => {
-      const file = fileInput.files[0];
-      filenameDiv.textContent = file ? file.name : '';
-    });
+<script>
+const API = 'http://localhost:8000';
+const AOI  = [[41.45, -88.4], [42.75, -87.5]]; // [[lat_min,lon_min],[lat_max,lon_max]]
 
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const file = fileInput.files[0];
-      if (!file) return;
+let catalog  = null;
+let years    = [];
+let mode     = 'timeline'; // 'timeline' | 'compare'
+let viewMode = 'tile';     // 'tile'     | 'pixel'
+let chart    = null;
 
-      submitBtn.disabled = true;
-      submitBtn.textContent = '';
-      spinner.style.display = 'block';
-      resultBox.classList.remove('visible');
-      preview.classList.remove('visible');
+// Leaflet overlays
+let timelineOverlay = null;
+let leftOverlay     = null;
+let rightOverlay    = null;
 
-      const formData = new FormData();
-      formData.append('file', file);
+// Satellite base overlays (Sentinel-2 RGB from backend /satellite/{year}.png)
+let satTimeline = null;
+let satLeft     = null;
+let satRight    = null;
 
-      try {
-        const response = await fetch('http://localhost:8000/predict/', {
-          method: 'POST',
-          body: formData,
-        });
+function makeSatOverlay(year) {
+  return L.imageOverlay(`${API}/satellite/${year}.png`, AOI, {
+    opacity: 1, interactive: false, crossOrigin: true,
+  });
+}
 
-        if (!response.ok) throw new Error('Server error');
+function loadSatBase(year) {
+  if (satTimeline) map.removeLayer(satTimeline);
+  satTimeline = makeSatOverlay(year).addTo(map);
+  satTimeline.setZIndex(1);
+}
 
-        const data = await response.json();
-        resultClass.textContent = data.predicted_class;
-        resultBox.classList.add('visible');
+function loadSatCompare(ya, yb) {
+  if (satLeft)  map.removeLayer(satLeft);
+  if (satRight) map.removeLayer(satRight);
+  satLeft  = makeSatOverlay(ya).addTo(map);
+  satRight = makeSatOverlay(yb).addTo(map);
+  satLeft.setZIndex(1);
+  satRight.setZIndex(1);
+}
 
-        if (data.image_url) {
-          preview.src = 'http://localhost:8000' + data.image_url;
-          preview.classList.add('visible');
-        }
-      } catch (error) {
-        resultClass.textContent = 'Error: ' + error.message;
-        resultBox.classList.add('visible');
-      } finally {
-        submitBtn.disabled = false;
-        submitBtn.textContent = 'Classify Image';
-        spinner.style.display = 'none';
+const map = L.map('map', { zoomControl: false, maxZoom: 14 }).setView([42.0, -87.95], 10);
+L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+const MIN_GRID_ZOOM = 13;
+const CLASS_ABBREVS = ['Crop','Forest','Herb','Road','Indust','Pasture','P.Crop','Resid','River','Lake'];
+const CANVAS_PAD = 400; // px buffer so short pans don't flicker
+
+let gridCache = {}; // year → {rows, cols, data}
+
+// Canvas lives in the overlay pane so it pans with the map automatically
+const gridCanvas = document.createElement('canvas');
+gridCanvas.style.cssText = 'position:absolute;pointer-events:none;';
+map.getPanes().overlayPane.appendChild(gridCanvas);
+
+// ── init ──────────────────────────────────────────────────────────────────────
+async function init() {
+  try {
+    const res = await fetch(`${API}/timeseries`);
+    if (!res.ok) throw new Error(res.statusText);
+    catalog = await res.json();
+  } catch {
+    document.getElementById('stats-tiles').textContent = 'Backend not reachable — is it running?';
+    return;
+  }
+
+  years = catalog.timeseries.map(s => s.year);
+  rebuildLegend('tile');
+  buildYearSelectors();
+  buildChart();
+  setupControls();
+  loadTimelineYear(years[0]);
+  fetchGrid(years[0]); // non-blocking
+}
+
+// ── classification grid (canvas, zoom >= 13) ──────────────────────────────────
+async function fetchGrid(year) {
+  if (!gridCache[year]) {
+    try {
+      const res = await fetch(`${API}/grid/${year}`);
+      if (res.ok) gridCache[year] = await res.json();
+    } catch (e) {
+      console.warn('Grid fetch failed:', e);
+    }
+  }
+  drawGrid(year);
+}
+
+function drawGrid(year) {
+  const zoom = map.getZoom();
+  if (zoom < MIN_GRID_ZOOM || mode === 'compare' || viewMode === 'pixel' || !gridCache[year]) {
+    gridCanvas.style.display = 'none';
+    if (timelineOverlay) timelineOverlay.setOpacity(opacity());
+    return;
+  }
+
+  // Hide the flat color overlay — canvas replaces it at high zoom
+  if (timelineOverlay) timelineOverlay.setOpacity(0);
+  gridCanvas.style.display = '';
+
+  const { rows, cols, data } = gridCache[year];
+  const [latMin, lonMin] = AOI[0];
+  const [latMax, lonMax] = AOI[1];
+  const dLat = (latMax - latMin) / rows;
+  const dLon = (lonMax - lonMin) / cols;
+
+  const size = map.getSize();
+  const w = size.x + CANVAS_PAD * 2;
+  const h = size.y + CANVAS_PAD * 2;
+
+  // Anchor canvas CANVAS_PAD px before viewport in layer-point space
+  const anchorLayer = map.containerPointToLayerPoint(L.point(-CANVAS_PAD, -CANVAS_PAD));
+  L.DomUtil.setPosition(gridCanvas, anchorLayer);
+  gridCanvas.width  = w;
+  gridCanvas.height = h;
+
+  const ctx = gridCanvas.getContext('2d');
+  ctx.clearRect(0, 0, w, h);
+
+  for (let r = 0; r < rows; r++) {
+    const cellLatMax = latMax - r * dLat;
+    const cellLatMin = cellLatMax - dLat;
+
+    for (let c = 0; c < cols; c++) {
+      const cellLonMin = lonMin + c * dLon;
+      const cellLonMax = cellLonMin + dLon;
+
+      const p1 = map.latLngToLayerPoint([cellLatMax, cellLonMin]);
+      const p2 = map.latLngToLayerPoint([cellLatMin, cellLonMax]);
+
+      const x = p1.x - anchorLayer.x;
+      const y = p1.y - anchorLayer.y;
+      const cw = p2.x - p1.x;
+      const ch = p2.y - p1.y;
+
+      if (x + cw < 0 || x > w || y + ch < 0 || y > h) continue;
+
+      const ci = data[r * cols + c];
+      const hex = catalog.class_colors[ci];
+
+      // Fill
+      ctx.fillStyle = hex + 'aa';
+      ctx.fillRect(x, y, cw, ch);
+
+      // Cell border
+      ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 0.5, y + 0.5, cw - 1, ch - 1);
+
+      // Label — only when cells are big enough to read
+      if (cw >= 36 && ch >= 18) {
+        const label = CLASS_ABBREVS[ci];
+        const fs = Math.max(9, Math.min(cw / 5, 13));
+        ctx.font = `bold ${fs}px 'Segoe UI', Arial, sans-serif`;
+        ctx.textAlign    = 'center';
+        ctx.textBaseline = 'middle';
+        const cx = x + cw / 2, cy = y + ch / 2;
+        ctx.fillStyle = 'rgba(0,0,0,0.65)';
+        ctx.fillText(label, cx + 1, cy + 1);
+        ctx.fillStyle = '#fff';
+        ctx.fillText(label, cx, cy);
       }
+    }
+  }
+}
+
+// Reposition + redraw after pan/zoom settle
+map.on('moveend zoomend', () => {
+  if (mode === 'timeline') {
+    const idx  = parseInt(document.getElementById('slider-year').value);
+    drawGrid(years[idx]);
+  }
+});
+
+
+// ── legend ────────────────────────────────────────────────────────────────────
+function rebuildLegend(vm) {
+  const container = document.getElementById('legend-rows');
+  const header    = document.querySelector('#legend h2');
+  container.innerHTML = '';
+
+  if (vm === 'pixel') {
+    header.textContent = 'Land Cover';
+    const names  = catalog.seg_class_names  || [];
+    const colors = catalog.seg_class_colors || [];
+    names.forEach((name, i) => {
+      const row = document.createElement('div');
+      row.className = 'legend-row';
+      row.innerHTML = `<div class="legend-swatch" style="background:${colors[i]}"></div><span>${name}</span>`;
+      container.appendChild(row);
     });
-  </script>
+  } else {
+    header.textContent = 'Land Use';
+    catalog.class_names.forEach((name, i) => {
+      const row = document.createElement('div');
+      row.className = 'legend-row';
+      row.innerHTML = `<div class="legend-swatch" style="background:${catalog.class_colors[i]}"></div><span>${name}</span>`;
+      container.appendChild(row);
+    });
+  }
+}
+
+// ── year selectors ────────────────────────────────────────────────────────────
+function buildYearSelectors() {
+  const slider = document.getElementById('slider-year');
+  slider.max   = years.length - 1;
+  slider.value = 0;
+  document.getElementById('lbl-year').textContent = years[0];
+
+  ['sel-from', 'sel-to'].forEach((id, i) => {
+    const sel = document.getElementById(id);
+    years.forEach(y => sel.add(new Option(y, y)));
+    sel.value = years[i === 0 ? 0 : years.length - 1];
+  });
+}
+
+// ── chart ─────────────────────────────────────────────────────────────────────
+const CHART_OPTIONS = {
+  responsive: true,
+  maintainAspectRatio: false,
+  interaction: { mode: 'index', intersect: false },
+  scales: {
+    x: { grid: { color: '#21262d' }, ticks: { color: '#8b949e' } },
+    y: {
+      stacked: true, max: 100,
+      grid: { color: '#21262d' }, ticks: { color: '#8b949e', callback: v => v + '%' },
+    },
+  },
+  plugins: {
+    legend: { position: 'right', labels: { color: '#8b949e', boxWidth: 10, font: { size: 10 } } },
+    tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)}%` } },
+  },
+};
+
+function buildChart() {
+  if (chart) { chart.destroy(); chart = null; }
+  const datasets = catalog.class_names.map((name, i) => ({
+    label: name,
+    data: catalog.timeseries.map(s => s.classes[name] ?? 0),
+    backgroundColor: catalog.class_colors[i] + 'aa',
+    borderColor:     catalog.class_colors[i],
+    borderWidth: 1.5, fill: true, tension: 0.35, pointRadius: 3,
+  }));
+  chart = new Chart(document.getElementById('tsChart'), {
+    type: 'line', data: { labels: years, datasets }, options: CHART_OPTIONS,
+  });
+}
+
+function buildSegChart() {
+  if (chart) { chart.destroy(); chart = null; }
+  const seg_ts = catalog.seg_timeseries || [];
+  if (!seg_ts.length) return; // no seg data yet — leave chart hidden
+  const seg_names  = catalog.seg_class_names  || [];
+  const seg_colors = catalog.seg_class_colors || [];
+  const seg_years  = seg_ts.map(s => s.year);
+  const datasets = seg_names.map((name, i) => ({
+    label: name,
+    data: seg_ts.map(s => s.seg_classes[name] ?? 0),
+    backgroundColor: seg_colors[i] + 'aa',
+    borderColor:     seg_colors[i],
+    borderWidth: 1.5, fill: true, tension: 0.35, pointRadius: 3,
+  }));
+  chart = new Chart(document.getElementById('tsChart'), {
+    type: 'line', data: { labels: seg_years, datasets }, options: CHART_OPTIONS,
+  });
+}
+
+// ── overlay helpers ───────────────────────────────────────────────────────────
+function makeOverlay(year) {
+  const url = viewMode === 'pixel'
+    ? `${API}/seg/overlay/${year}.png`
+    : `${API}/overlay/${year}.png`;
+  return L.imageOverlay(url, AOI, {
+    opacity: opacity(),
+    interactive: false,
+    crossOrigin: true,
+  });
+}
+
+function opacity() {
+  const id = mode === 'compare' ? 'slider-opacity-cmp' : 'slider-opacity';
+  return document.getElementById(id).value / 100;
+}
+
+function updateStatsCard(year) {
+  document.getElementById('stats-year').textContent = year;
+  if (viewMode === 'pixel') {
+    const entry = (catalog.seg_timeseries || []).find(s => s.year === year);
+    if (entry) {
+      const top = Object.entries(entry.seg_classes).sort((a, b) => b[1] - a[1]).slice(0, 3);
+      document.getElementById('stats-tiles').textContent =
+        top.map(([n, v]) => `${n} ${v.toFixed(1)}%`).join('  ·  ');
+    }
+  } else {
+    const entry = catalog.timeseries.find(s => s.year === year);
+    if (entry) {
+      const top = Object.entries(entry.classes).sort((a, b) => b[1] - a[1]).slice(0, 3);
+      document.getElementById('stats-tiles').textContent =
+        top.map(([n, v]) => `${n} ${v.toFixed(1)}%`).join('  ·  ');
+    }
+  }
+}
+
+// ── timeline mode ─────────────────────────────────────────────────────────────
+function loadTimelineYear(year) {
+  loadSatBase(year);
+  if (timelineOverlay) map.removeLayer(timelineOverlay);
+  timelineOverlay = makeOverlay(year).addTo(map);
+  updateStatsCard(year);
+  fetchGrid(year);
+}
+
+// ── compare mode ──────────────────────────────────────────────────────────────
+function loadCompare() {
+  const ya = parseInt(document.getElementById('sel-from').value);
+  const yb = parseInt(document.getElementById('sel-to').value);
+  if (ya === yb) return;
+
+  if (leftOverlay)  map.removeLayer(leftOverlay);
+  if (rightOverlay) map.removeLayer(rightOverlay);
+
+  loadSatCompare(ya, yb);
+  loadSatCompare(ya, yb);
+  leftOverlay  = makeOverlay(ya).addTo(map);
+  rightOverlay = makeOverlay(yb).addTo(map);
+
+  const applyClip = () => applyDividerClip(dividerPct());
+  leftOverlay.once('load',  applyClip);
+  rightOverlay.once('load', applyClip);
+  satLeft.once('load',  applyClip);
+  satRight.once('load', applyClip);
+  satLeft.once('load',  applyClip);
+  satRight.once('load', applyClip);
+
+  document.getElementById('stats-year').textContent = `${ya}  →  ${yb}`;
+  document.getElementById('stats-tiles').textContent = 'drag the line to compare';
+}
+
+// ── divider drag ──────────────────────────────────────────────────────────────
+const dividerEl = document.getElementById('divider');
+let dragging = false;
+
+function dividerPct() {
+  return parseFloat(dividerEl.style.left || '50%');
+}
+
+function applyDividerClip(pct) {
+  dividerEl.style.left = pct + '%';
+  const le  = leftOverlay?.getElement();
+  const re  = rightOverlay?.getElement();
+  const sle = satLeft?.getElement();
+  const sre = satRight?.getElement();
+  if (le)  le.style.clipPath  = `inset(0 ${100 - pct}% 0 0)`;
+  if (re)  re.style.clipPath  = `inset(0 0 0 ${pct}%)`;
+  if (sle) sle.style.clipPath = `inset(0 ${100 - pct}% 0 0)`;
+  if (sre) sre.style.clipPath = `inset(0 0 0 ${pct}%)`;
+}
+
+dividerEl.addEventListener('mousedown', e => { dragging = true; e.preventDefault(); });
+document.addEventListener('mousemove', e => {
+  if (!dragging) return;
+  const rect = document.getElementById('map').getBoundingClientRect();
+  const pct  = Math.max(2, Math.min(98, (e.clientX - rect.left) / rect.width * 100));
+  applyDividerClip(pct);
+});
+document.addEventListener('mouseup', () => { dragging = false; });
+
+// touch support
+dividerEl.addEventListener('touchstart', e => { dragging = true; e.preventDefault(); }, { passive: false });
+document.addEventListener('touchmove', e => {
+  if (!dragging) return;
+  const rect = document.getElementById('map').getBoundingClientRect();
+  const pct  = Math.max(2, Math.min(98, (e.touches[0].clientX - rect.left) / rect.width * 100));
+  applyDividerClip(pct);
+}, { passive: false });
+document.addEventListener('touchend', () => { dragging = false; });
+
+// ── view mode (Tile / Pixel) ───────────────────────────────────────────────────
+function switchViewMode(vm) {
+  viewMode = vm;
+  document.getElementById('btn-tile').classList.toggle('active',  vm === 'tile');
+  document.getElementById('btn-pixel').classList.toggle('active', vm === 'pixel');
+
+  // Update subtitle
+  document.querySelector('#title-card p').textContent = vm === 'pixel'
+    ? 'SegFormer-B2 (LoveDA 7-class) on Sentinel-2 10 m RGB · 2019–2024'
+    : 'EuroSAT ResNet-18 on Sentinel-2 10 m RGB · 2019–2024';
+
+  rebuildLegend(vm);
+
+  // Rebuild chart for the active dataset
+  if (vm === 'pixel') buildSegChart();
+  else buildChart();
+
+  // Reload overlay for current state
+  if (mode === 'timeline') {
+    const idx = parseInt(document.getElementById('slider-year').value);
+    loadTimelineYear(years[idx]);
+  } else {
+    loadCompare();
+  }
+}
+
+// ── controls wiring ───────────────────────────────────────────────────────────
+function setupControls() {
+  // mode buttons
+  document.getElementById('btn-timeline').addEventListener('click', () => {
+    mode = 'timeline';
+    document.getElementById('btn-timeline').classList.add('active');
+    document.getElementById('btn-compare').classList.remove('active');
+    document.getElementById('row-timeline').style.display = '';
+    document.getElementById('row-compare').style.display  = 'none';
+    dividerEl.style.display = 'none';
+    if (leftOverlay)  { map.removeLayer(leftOverlay);  leftOverlay  = null; }
+    if (rightOverlay) { map.removeLayer(rightOverlay); rightOverlay = null; }
+    const idx  = parseInt(document.getElementById('slider-year').value);
+    loadTimelineYear(years[idx]);
+  });
+
+  document.getElementById('btn-compare').addEventListener('click', () => {
+    mode = 'compare';
+    document.getElementById('btn-compare').classList.add('active');
+    document.getElementById('btn-timeline').classList.remove('active');
+    document.getElementById('row-compare').style.display  = '';
+    document.getElementById('row-timeline').style.display = 'none';
+    dividerEl.style.display = 'block';
+    applyDividerClip(50);
+    gridCanvas.style.display = 'none';
+    if (timelineOverlay) { map.removeLayer(timelineOverlay); timelineOverlay = null; }
+    loadCompare();
+  });
+
+  // timeline year slider
+  document.getElementById('slider-year').addEventListener('input', e => {
+    const year = years[parseInt(e.target.value)];
+    document.getElementById('lbl-year').textContent = year;
+    loadTimelineYear(year);
+  });
+
+  // opacity sliders
+  ['slider-opacity', 'slider-opacity-cmp'].forEach(id => {
+    document.getElementById(id).addEventListener('input', () => {
+      const op = opacity();
+      timelineOverlay?.setOpacity(op);
+      leftOverlay?.setOpacity(op);
+      rightOverlay?.setOpacity(op);
+    });
+  });
+
+  // compare selectors
+  ['sel-from', 'sel-to'].forEach(id => {
+    document.getElementById(id).addEventListener('change', loadCompare);
+  });
+
+  // Tile / Pixel toggle
+  document.getElementById('btn-tile').addEventListener('click',  () => switchViewMode('tile'));
+  document.getElementById('btn-pixel').addEventListener('click', () => switchViewMode('pixel'));
+
+  // chart toggle
+  const chartPanel = document.getElementById('chart-panel');
+  document.getElementById('chart-toggle-btn').addEventListener('click', () => {
+    chartPanel.style.display = chartPanel.style.display === 'none' ? 'block' : 'none';
+    if (chart) chart.resize();
+  });
+  document.getElementById('chart-close').addEventListener('click', () => {
+    chartPanel.style.display = 'none';
+  });
+}
+
+init();
+</script>
 </body>
 </html>
