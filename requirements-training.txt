@@ -1,6 +1,10 @@
 numpy
 torch
 torchvision
+transformers>=4.38.0
+evaluate
+datasets
+accelerate
 mlflow>=2.12
 sagemaker>=2.200
 boto3>=1.34

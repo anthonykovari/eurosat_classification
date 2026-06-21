@@ -61,25 +61,30 @@ SEG_STRIDE  = 256
 def make_synthetic_rgb(year: int, years: list[int], h: int = 512, w: int = 512) -> np.ndarray:
     """
     Growing urban core (grey) surrounded by agricultural land (green).
-    Matches the _synthetic_imagery() logic in urban_sprawl_dag.py.
+    Generated at 1/8 resolution then upscaled so blobs are spatially coherent
+    (pixel-by-pixel random noise looks like TV static at full resolution).
     """
     i = years.index(year)
     rng = np.random.default_rng(42 + i)
-    rgb = np.zeros((h, w, 3), dtype=np.uint8)
-    # Background: agricultural / herbaceous green
-    rgb[:, :, 0] = rng.integers(40, 90, (h, w), dtype=np.uint8)
-    rgb[:, :, 1] = rng.integers(80, 140, (h, w), dtype=np.uint8)
-    rgb[:, :, 2] = rng.integers(30, 70, (h, w), dtype=np.uint8)
-    # Expanding urban core
-    cy, cx = h // 2, w // 2
-    radius = 70 + i * 14
-    yy, xx = np.ogrid[:h, :w]
+    SCALE = 8
+    lh, lw = max(1, h // SCALE), max(1, w // SCALE)
+
+    low = np.zeros((lh, lw, 3), dtype=np.uint8)
+    low[:, :, 0] = rng.integers(40,  90,  (lh, lw), dtype=np.uint8)
+    low[:, :, 1] = rng.integers(80,  140, (lh, lw), dtype=np.uint8)
+    low[:, :, 2] = rng.integers(30,  70,  (lh, lw), dtype=np.uint8)
+
+    cy, cx = lh // 2, lw // 2
+    radius = max(1, (70 + i * 14) // SCALE)
+    yy, xx = np.ogrid[:lh, :lw]
     urban = (yy - cy) ** 2 + (xx - cx) ** 2 < radius ** 2
     n = int(urban.sum())
-    rgb[urban, 0] = rng.integers(90, 155, n, dtype=np.uint8)
-    rgb[urban, 1] = rng.integers(90, 155, n, dtype=np.uint8)
-    rgb[urban, 2] = rng.integers(90, 155, n, dtype=np.uint8)
-    return rgb
+    if n:
+        low[urban, 0] = rng.integers(90, 155, n, dtype=np.uint8)
+        low[urban, 1] = rng.integers(90, 155, n, dtype=np.uint8)
+        low[urban, 2] = rng.integers(90, 155, n, dtype=np.uint8)
+
+    return np.array(Image.fromarray(low).resize((w, h), Image.BILINEAR))
 
 
 # ── ResNet-18 tile classification ────────────────────────────────────────────
@@ -186,18 +191,18 @@ def main(args: argparse.Namespace) -> None:
     resnet.to(device).eval()
     log.info("ResNet-18 loaded from %s", args.resnet_path)
 
-    # Load SegFormer-B2
+    # Load SegFormer-B2 — save_pretrained writes model.safetensors into seg_config dir,
+    # so from_pretrained loads both architecture and weights in one call.
     seg_model = None
-    if os.path.isfile(args.seg_path) and os.path.isdir(args.seg_config):
+    if os.path.isdir(args.seg_config):
         seg_model = SegformerForSemanticSegmentation.from_pretrained(args.seg_config)
-        seg_model.load_state_dict(torch.load(args.seg_path, map_location=device))
         seg_model.to(device).eval()
-        log.info("SegFormer-B2 loaded from %s", args.seg_path)
+        log.info("SegFormer-B2 loaded from %s", args.seg_config)
     else:
         log.warning(
-            "SegFormer weights not found at %s — skipping pixel segmentation\n"
+            "SegFormer config not found at %s — skipping pixel segmentation\n"
             "Run 'make train-segformer' first, then re-run this script.",
-            args.seg_path,
+            args.seg_config,
         )
 
     year_stats:     list[dict] = []

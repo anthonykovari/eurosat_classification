@@ -38,16 +38,47 @@ etl-logs:
 	docker compose -f etl/docker-compose.yml logs -f
 
 localstack-seed:
-	pip install boto3 -q
-	python scripts/localstack_seed.py
+	python3 scripts/localstack_seed.py
 
 etl-trigger:
 	docker compose -f etl/docker-compose.yml exec airflow-scheduler \
-	  airflow dags trigger eurosat_etl_pipeline
+	  airflow dags trigger chicago_land_use_pipeline
 
 etl-status:
 	docker compose -f etl/docker-compose.yml exec airflow-scheduler \
-	  airflow dags list-runs -d eurosat_etl_pipeline --state all
+	  airflow dags list-runs -d chicago_land_use_pipeline --state all
+
+# ── Training (EuroSAT ResNet-18 — weights reused by the ETL classifier) ──────
+train-local:
+	python3 scripts/train.py
+
+train-mlflow:
+	MLFLOW_TRACKING_URI=http://localhost:5001 python3 scripts/train.py --epochs 2
+
+# ── Training (SegFormer-B2 on LoveDA — per-pixel segmentation) ────────────────
+init-segformer:
+	python3 scripts/init_segformer.py
+
+train-pipeline:
+	bash scripts/train_pipeline.sh
+
+train-pipeline-watch:
+	tail -f /tmp/train_pipeline.log
+
+train-segformer:
+	MLFLOW_TRACKING_URI=./mlruns python3 scripts/train_segformer.py
+
+train-segformer-mlflow:
+	MLFLOW_TRACKING_URI=http://localhost:5001 python3 scripts/train_segformer.py --epochs 5
+
+# ── Local demo data (no CDSE / Airflow needed) ────────────────────────────────
+generate-masks:
+	python3 scripts/generate_seg_masks.py
+
+serve-local:
+	LOCAL_DATA_DIR=local_s3 MODEL_PATH=outputs/resnet18_eurosat.pth \
+	  SEG_MODEL_PATH=outputs/segformer_b2_loveda.pth \
+	  python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 
 # ── Kubernetes ────────────────────────────────────────────────────────────────
 k8s-dev:
@@ -60,35 +91,46 @@ k8s-prod:
 	kustomize build k8s/overlays/prod | kubectl apply -f -
 
 k8s-status:
-	kubectl get pods,svc,hpa -n eurosat
-
-# ── Training ──────────────────────────────────────────────────────────────────
-train-local:
-	python scripts/train.py
-
-train-mlflow:
-	MLFLOW_TRACKING_URI=http://localhost:5001 python scripts/train.py --epochs 2
-
-train-sagemaker:
-	python scripts/sagemaker_train.py
-
-deploy:
-	python deploy.py
+	kubectl get pods,svc,hpa -n chicago-land-use
 
 # ── Kubernetes (minikube) ─────────────────────────────────────────────────────
+install-k8s-tools:
+	curl -LO "https://dl.k8s.io/release/$$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
+	  && chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+	curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64 \
+	  && chmod +x minikube-linux-amd64 && sudo mv minikube-linux-amd64 /usr/local/bin/minikube
+	curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash \
+	  && sudo mv kustomize /usr/local/bin/
+
+k8s-minikube-start:
+	minikube start --cpus=4 --memory=4g --driver=docker
+
 k8s-minikube-images:
 	eval $$(minikube docker-env) && \
-	  docker build -t eurosat-backend:latest -f backend/Dockerfile . && \
-	  docker build -t eurosat-frontend:latest ./frontend
+	  docker build -t chicago-landuse-backend:latest -f backend/Dockerfile . && \
+	  docker build -t chicago-landuse-frontend:latest ./frontend
 
 k8s-minikube-deploy: k8s-minikube-images
-	kubectl create secret generic aws-credentials -n eurosat \
+	minikube ssh -- sudo mkdir -p /mnt/chicago-outputs
+	minikube cp outputs/resnet18_eurosat.pth minikube:/mnt/chicago-outputs/resnet18_eurosat.pth
+	kustomize build k8s/overlays/dev | kubectl apply -f -
+	kubectl create secret generic aws-credentials -n chicago-land-use \
 	  --from-literal=access-key-id=test \
 	  --from-literal=secret-access-key=test \
 	  --dry-run=client -o yaml | kubectl apply -f -
-	kustomize build k8s/overlays/dev | kubectl apply -f -
-	kubectl rollout status deployment/backend -n eurosat --timeout=120s
-	kubectl rollout status deployment/frontend -n eurosat --timeout=60s
+	kubectl rollout status deployment/backend -n chicago-land-use --timeout=120s
+	kubectl rollout status deployment/frontend -n chicago-land-use --timeout=60s
+
+k8s-minikube-url:
+	@echo "Frontend : $$(minikube service frontend -n chicago-land-use --url)"
+	@echo "Backend  : $$(minikube service backend  -n chicago-land-use --url)"
+	@echo "API docs : $$(minikube service backend  -n chicago-land-use --url)/docs"
+
+k8s-minikube-stop:
+	minikube stop
+
+k8s-minikube-delete:
+	minikube delete
 
 # ── Terraform ─────────────────────────────────────────────────────────────────
 tf-init:

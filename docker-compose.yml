@@ -3,20 +3,27 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    image: eurosat-backend
+    image: chicago-landuse-backend
     ports:
       - "8000:8000"
     volumes:
       - ./outputs:/app/outputs
-      - ./uploaded:/app/uploaded
     environment:
+      - MODEL_PATH=/app/outputs/resnet18_eurosat.pth
+      - SEG_MODEL_PATH=/app/outputs/segformer_b2_loveda.pth
+      - S3_BUCKET=chicago-land-use
       - MLFLOW_TRACKING_URI=http://mlflow:5000
+      # Point at LocalStack for local dev; remove for real AWS
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    image: eurosat-frontend
+    image: chicago-landuse-frontend
     ports:
       - "3000:8000"
 
@@ -28,15 +35,17 @@ services:
       mlflow server
         --host 0.0.0.0
         --port 5000
-        --backend-store-uri sqlite:////mlflow/mlflow.db
-        --default-artifact-root /mlflow/artifacts
+        --backend-store-uri /mlruns
+        --default-artifact-root /mlruns/artifacts
     volumes:
-      - mlflow-data:/mlflow
+      - ./mlruns:/mlruns
 
   prometheus:
     image: prom/prometheus:v2.51.2
     ports:
       - "9090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
@@ -44,8 +53,6 @@ services:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
       - '--storage.tsdb.retention.time=7d'
-    depends_on:
-      - backend
 
   grafana:
     image: grafana/grafana:10.4.2

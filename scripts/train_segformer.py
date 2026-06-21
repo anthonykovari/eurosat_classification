@@ -66,9 +66,12 @@ def download_loveda(root: Path) -> None:
             log.info("LoveDA %s already present — skipping", split)
             continue
         zip_path = root / f"{split}.zip"
-        log.info("Downloading LoveDA %s …", split)
-        urllib.request.urlretrieve(url, zip_path, _report)
-        print()
+        if not zip_path.exists():
+            log.info("Downloading LoveDA %s …", split)
+            urllib.request.urlretrieve(url, zip_path, _report)
+            print()
+        else:
+            log.info("LoveDA %s zip found on disk — extracting …", split)
         log.info("Extracting …")
         with zipfile.ZipFile(zip_path) as zf:
             zf.extractall(root)
