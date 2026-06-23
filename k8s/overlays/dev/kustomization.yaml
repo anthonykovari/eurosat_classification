@@ -3,6 +3,8 @@ kind: Kustomization
 
 resources:
   - ../../base
+  - minio.yaml
+  - minio-secret.yaml
 
 patches:
   - path: backend-service-patch.yaml
@@ -23,3 +25,6 @@ configMapGenerator:
     behavior: merge
     literals:
       - DEBUG=true
+      - S3_BUCKET=chicago-land-use
+      - AWS_ENDPOINT_URL=http://minio:9000
+      - AWS_DEFAULT_REGION=us-east-1

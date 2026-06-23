@@ -61,40 +61,28 @@ CLASS_COLORS = [
     "#0044aa",  # SeaLake              - navy
 ]
 
-SEG_CLASS_NAMES  = ["Background", "Building", "Road", "Water", "Barren", "Forest", "Agriculture"]
-SEG_CLASS_COLORS = ["#1a1a2e", "#e05a5a", "#b0b0b0", "#1e90ff", "#c4a55a", "#2e8b57", "#f5c542"]
-SEGFORMER_MEAN   = [0.485, 0.456, 0.406]
-SEGFORMER_STD    = [0.229, 0.224, 0.225]
-
 # Only B04/B03/B02 are fetched; the evalscript converts DN → uint8 on the
 # Sentinel Hub side so nothing else crosses the wire.
 EVALSCRIPT = """
 //VERSION=3
-// Cloud-free median composite over the growing season (April-October).
-// ORBIT mosaicking gives every Sentinel-2 pass (~5-day revisit) as separate
-// samples.  We discard cloudy pixels (CLM=1) and take the per-channel median
-// of the remaining clear observations — typically 30-42 per pixel.
+// Least-cloudy single scene from the growing season (June-September).
+// SIMPLE mosaicking picks the least-cloudy acquisition — ~1 input scene per
+// pixel vs ~25 for ORBIT median, so ~25x cheaper in processing units.
 // Clip at 3000 DN to match EuroSAT training brightness.
 function setup() {
   return {
     input: [{ bands: ["B02", "B03", "B04", "CLM"] }],
     output: { bands: 3, sampleType: "UINT8" },
-    mosaicking: "ORBIT"
+    mosaicking: "SIMPLE"
   };
 }
-function median(arr) {
-  arr.sort(function(a, b) { return a - b; });
-  var mid = Math.floor(arr.length / 2);
-  return arr.length % 2 ? arr[mid] : (arr[mid - 1] + arr[mid]) / 2;
-}
 function evaluatePixel(samples) {
-  var clear = samples.filter(function(s) { return s.CLM === 0; });
-  if (clear.length === 0) clear = samples; // fallback: all samples cloudy
+  var s = samples[0];
   var f = 255.0 / 3000.0;
   return [
-    Math.min(255, Math.round(median(clear.map(function(s) { return s.B04; })) * f)),
-    Math.min(255, Math.round(median(clear.map(function(s) { return s.B03; })) * f)),
-    Math.min(255, Math.round(median(clear.map(function(s) { return s.B02; })) * f)),
+    Math.min(255, Math.round(s.B04 * f)),
+    Math.min(255, Math.round(s.B03 * f)),
+    Math.min(255, Math.round(s.B02 * f)),
   ];
 }
 """
@@ -387,119 +375,6 @@ with DAG(
         return {"year_stats": year_stats}
 
     @task()
-    def classify_pixels(fetch_meta: dict) -> dict:
-        """
-        Run SegFormer-B2 (fine-tuned on LoveDA) over each year's RGB raster
-        using a sliding-window approach to produce per-pixel land cover masks.
-        Runs in parallel with classify_tiles — both read imagery/{year}/rgb.npy.
-
-        Writes:
-          seg/{year}/mask.npy  — (H, W) uint8 pixel-level class indices (0-6)
-        """
-        import io as _io
-
-        SEG_MODEL_PATH = os.environ.get(
-            "SEG_MODEL_PATH", "/app/outputs/segformer_b2_loveda.pth"
-        )
-
-        if not os.path.isfile(SEG_MODEL_PATH):
-            log.warning("SEG_MODEL_PATH not found (%s) — skipping pixel classification", SEG_MODEL_PATH)
-            return {"seg_year_stats": []}
-
-        import torch
-        import torch.nn.functional as F
-        from torchvision import transforms
-        from transformers import SegformerForSemanticSegmentation
-        from PIL import Image
-        from itertools import product as iproduct
-
-        TILE       = 512
-        STRIDE     = 256
-        BATCH_WIN  = 4
-        SEG_CONFIG_PATH = os.path.join(os.path.dirname(SEG_MODEL_PATH), "segformer_config")
-
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        log.info("classify_pixels: using device=%s", device)
-
-        seg_model = SegformerForSemanticSegmentation.from_pretrained(SEG_CONFIG_PATH)
-        seg_model.load_state_dict(torch.load(SEG_MODEL_PATH, map_location=device))
-        seg_model.to(device).eval()
-
-        seg_transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(mean=SEGFORMER_MEAN, std=SEGFORMER_STD),
-        ])
-
-        s3 = boto3.client("s3")
-        year_stats: list[dict] = []
-
-        for year in sorted(fetch_meta["years"]):
-            obj = s3.get_object(Bucket=S3_BUCKET, Key=f"imagery/{year}/rgb.npy")
-            rgb = np.load(_io.BytesIO(obj["Body"].read()))  # (H, W, 3)
-            H, W = rgb.shape[:2]
-            log.info("classify_pixels year=%d  shape=(%d,%d)", year, H, W)
-
-            # Build window top-left coordinates (include right/bottom edge windows)
-            ys = list(range(0, max(1, H - TILE + 1), STRIDE))
-            xs = list(range(0, max(1, W - TILE + 1), STRIDE))
-            if ys[-1] + TILE < H:
-                ys.append(H - TILE)
-            if xs[-1] + TILE < W:
-                xs.append(W - TILE)
-
-            # Accumulate logits for overlap-averaging (reduces seam artifacts)
-            accumulator = np.zeros((H, W, len(SEG_CLASS_NAMES)), dtype=np.float32)
-            count_map   = np.zeros((H, W), dtype=np.float32)
-
-            coords = list(iproduct(ys, xs))
-            for batch_start in range(0, len(coords), BATCH_WIN):
-                batch_coords = coords[batch_start:batch_start + BATCH_WIN]
-                tensors = []
-                for y0, x0 in batch_coords:
-                    patch = rgb[y0:y0 + TILE, x0:x0 + TILE]
-                    # Pad if patch is smaller than TILE (edge case)
-                    if patch.shape[0] < TILE or patch.shape[1] < TILE:
-                        padded = np.zeros((TILE, TILE, 3), dtype=np.uint8)
-                        padded[:patch.shape[0], :patch.shape[1]] = patch
-                        patch = padded
-                    tensors.append(seg_transform(Image.fromarray(patch)))
-
-                batch_t = torch.stack(tensors).to(device)
-                with torch.no_grad(), torch.cuda.amp.autocast(enabled=(device.type == "cuda")):
-                    logits = seg_model(pixel_values=batch_t).logits  # (B, C, H/4, W/4)
-                up = F.interpolate(logits, size=(TILE, TILE),
-                                   mode="bilinear", align_corners=False)
-                up_np = up.cpu().float().numpy()  # (B, C, TILE, TILE)
-
-                for i, (y0, x0) in enumerate(batch_coords):
-                    h_slice = min(TILE, H - y0)
-                    w_slice = min(TILE, W - x0)
-                    accumulator[y0:y0 + h_slice, x0:x0 + w_slice] += \
-                        up_np[i, :, :h_slice, :w_slice].transpose(1, 2, 0)
-                    count_map[y0:y0 + h_slice, x0:x0 + w_slice] += 1.0
-
-                if batch_start % (BATCH_WIN * 20) == 0:
-                    log.info("  year=%d  windows %d/%d", year, batch_start, len(coords))
-
-            mask = (accumulator / np.maximum(count_map[:, :, np.newaxis], 1.0)
-                    ).argmax(axis=2).astype(np.uint8)
-
-            buf = _io.BytesIO()
-            np.save(buf, mask)
-            s3.put_object(Bucket=S3_BUCKET, Key=f"seg/{year}/mask.npy", Body=buf.getvalue())
-
-            counts = np.bincount(mask.ravel(), minlength=len(SEG_CLASS_NAMES))
-            total  = int(counts.sum())
-            seg_class_pct = {
-                SEG_CLASS_NAMES[i]: round(float(counts[i] / total * 100), 2)
-                for i in range(len(SEG_CLASS_NAMES))
-            }
-            year_stats.append({"year": year, "pixel_count": total, "seg_classes": seg_class_pct})
-            log.info("classify_pixels year=%d done  %s", year, seg_class_pct)
-
-        return {"seg_year_stats": year_stats}
-
-    @task()
     def detect_changes(classify_meta: dict) -> dict:
         """
         Diff consecutive year grids to find tiles that changed class.
@@ -564,7 +439,7 @@ with DAG(
         return {"changes": changes}
 
     @task()
-    def register_catalog(classify_meta: dict, change_meta: dict, seg_meta: dict) -> dict:
+    def register_catalog(classify_meta: dict, change_meta: dict) -> dict:
         """Write the full time-series catalog to S3 for the backend to serve."""
         s3 = boto3.client("s3")
         catalog = {
@@ -573,24 +448,17 @@ with DAG(
             "class_colors": CLASS_COLORS,
             "timeseries":   classify_meta["year_stats"],
             "changes":      change_meta["changes"],
-            # SegFormer per-pixel segmentation (populated after train_segformer.py)
-            "seg_class_names":  SEG_CLASS_NAMES,
-            "seg_class_colors": SEG_CLASS_COLORS,
-            "seg_timeseries":   seg_meta.get("seg_year_stats", []),
         }
         payload = json.dumps(catalog, indent=2).encode()
         s3.put_object(
             Bucket=S3_BUCKET, Key="catalog/latest.json",
             Body=payload, ContentType="application/json",
         )
-        log.info("Catalog registered: %d years, %d change pairs, %d seg years",
-                 len(classify_meta["year_stats"]), len(change_meta["changes"]),
-                 len(seg_meta.get("seg_year_stats", [])))
+        log.info("Catalog registered: %d years, %d change pairs",
+                 len(classify_meta["year_stats"]), len(change_meta["changes"]))
         return {"status": "success"}
 
-    # DAG wiring — classify_tiles and classify_pixels run in parallel after fetch
     fetched    = fetch_imagery()
     classified = classify_tiles(fetched)
-    segmented  = classify_pixels(fetched)
     changed    = detect_changes(classified)
-    register_catalog(classified, changed, segmented)
+    register_catalog(classified, changed)

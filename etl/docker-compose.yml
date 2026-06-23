@@ -47,6 +47,7 @@ services:
       LOCALSTACK_HOST: localstack
     volumes:
       - localstack-data:/var/lib/localstack
+      - ./localstack-init/ready.d:/etc/localstack/init/ready.d
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
       interval: 10s

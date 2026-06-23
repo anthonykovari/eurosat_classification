@@ -1,4 +1,8 @@
 
+# ── MLflow Model Registry ────────────────────────────────────────────────────
+mlflow-register:
+	python3 scripts/register_models.py
+
 # ── Local Docker ──────────────────────────────────────────────────────────────
 start:
 	docker compose up --build -d
@@ -49,6 +53,9 @@ etl-status:
 	  airflow dags list-runs -d chicago_land_use_pipeline --state all
 
 # ── Training (EuroSAT ResNet-18 — weights reused by the ETL classifier) ──────
+export-onnx:
+	python3 scripts/export_onnx.py
+
 train-local:
 	python3 scripts/train.py
 
@@ -114,17 +121,20 @@ k8s-minikube-deploy: k8s-minikube-images
 	minikube ssh -- sudo mkdir -p /mnt/chicago-outputs
 	minikube cp outputs/resnet18_eurosat.pth minikube:/mnt/chicago-outputs/resnet18_eurosat.pth
 	kustomize build k8s/overlays/dev | kubectl apply -f -
-	kubectl create secret generic aws-credentials -n chicago-land-use \
-	  --from-literal=access-key-id=test \
-	  --from-literal=secret-access-key=test \
-	  --dry-run=client -o yaml | kubectl apply -f -
-	kubectl rollout status deployment/backend -n chicago-land-use --timeout=120s
-	kubectl rollout status deployment/frontend -n chicago-land-use --timeout=60s
+	kubectl rollout status deployment/minio   -n eurosat --timeout=60s
+	kubectl rollout status deployment/backend -n eurosat --timeout=120s
+	kubectl rollout status deployment/frontend -n eurosat --timeout=60s
+
+k8s-minikube-seed:
+	kubectl delete job minio-seed -n eurosat --ignore-not-found
+	kubectl apply -f k8s/overlays/dev/minio-seed-job.yaml
+	kubectl wait --for=condition=complete job/minio-seed -n eurosat --timeout=600s
 
 k8s-minikube-url:
-	@echo "Frontend : $$(minikube service frontend -n chicago-land-use --url)"
-	@echo "Backend  : $$(minikube service backend  -n chicago-land-use --url)"
-	@echo "API docs : $$(minikube service backend  -n chicago-land-use --url)/docs"
+	@echo "Frontend : $$(minikube service frontend -n eurosat --url)"
+	@echo "Backend  : $$(minikube service backend  -n eurosat --url)"
+	@echo "API docs : $$(minikube service backend  -n eurosat --url)/docs"
+	@echo "MinIO    : $$(minikube service minio    -n eurosat --url | head -1)"
 
 k8s-minikube-stop:
 	minikube stop

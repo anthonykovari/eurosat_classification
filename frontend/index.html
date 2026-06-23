@@ -38,11 +38,15 @@
 
     #legend {
       top: 16px; right: 16px;
-      max-width: 170px;
+      max-width: 240px;
     }
     #legend h2 { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px; color: #8b949e; margin-bottom: 10px; }
-    .legend-row { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; font-size: 0.78rem; color: #c9d1d9; }
+    #legend-cmp-header { display: flex; justify-content: flex-end; gap: 0; font-size: 0.68rem; font-weight: 600; margin-bottom: 6px; margin-top: -4px; }
+    .legend-row { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; font-size: 0.78rem; color: #c9d1d9; }
+    .legend-name { flex: 1; }
     .legend-swatch { width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0; }
+    .legend-pct  { font-size: 0.72rem; color: #58a6ff; min-width: 36px; text-align: right; font-variant-numeric: tabular-nums; }
+    .legend-pct2 { font-size: 0.72rem; color: #3fb950; min-width: 36px; text-align: right; font-variant-numeric: tabular-nums; display: none; }
 
     /* ── bottom controls ── */
     #controls {
@@ -113,6 +117,32 @@
       user-select: none;
     }
 
+    /* ── sprawl / compare panel ── */
+    #sprawl-panel {
+      top: 16px; right: 16px;
+      width: 310px;
+      display: none;
+    }
+    #sprawl-panel h2 { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px; color: #8b949e; margin-bottom: 4px; }
+    #sprawl-subtitle  { font-size: 0.68rem; color: #58a6ff; margin-bottom: 10px; }
+    .sp-row {
+      display: grid;
+      grid-template-columns: 14px 1fr 54px 54px 58px 46px;
+      align-items: center;
+      gap: 4px;
+      margin-bottom: 4px;
+      font-size: 0.72rem;
+    }
+    .sp-header { color: #8b949e; font-size: 0.65rem; font-weight: 600; margin-bottom: 6px; }
+    .sp-swatch { width: 14px; height: 14px; border-radius: 3px; }
+    .sp-name   { color: #c9d1d9; }
+    .sp-val    { text-align: right; color: #8b949e; font-variant-numeric: tabular-nums; }
+    .sp-delta  { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .sp-pct    { text-align: right; font-size: 0.68rem; font-variant-numeric: tabular-nums; }
+    .pos { color: #3fb950; }
+    .neg { color: #f85149; }
+    #sprawl-unavail { font-size: 0.72rem; color: #8b949e; font-style: italic; margin-top: 6px; }
+
     /* ── chart panel ── */
     #chart-panel {
       bottom: 120px; left: 50%; transform: translateX(-50%);
@@ -152,11 +182,19 @@
 
 <div class="panel" id="legend">
   <h2>Land Use</h2>
+  <div id="legend-cmp-header"></div>
   <div id="legend-rows"></div>
 </div>
 
 <div id="divider">
   <div id="divider-handle">⇔</div>
+</div>
+
+<div class="panel" id="sprawl-panel">
+  <h2>Land Cover Change</h2>
+  <div id="sprawl-subtitle"></div>
+  <div id="sprawl-unavail" style="display:none">Sprawl stats not yet computed — trigger chicago_compute_sprawl</div>
+  <div id="sprawl-rows"></div>
 </div>
 
 <div class="panel" id="chart-panel">
@@ -169,9 +207,6 @@
   <div class="ctrl-row">
     <button class="mode-btn active" id="btn-timeline">Timeline</button>
     <button class="mode-btn" id="btn-compare">Compare</button>
-    <div style="width:1px;height:20px;background:#30363d;margin:0 4px;flex-shrink:0"></div>
-    <button class="mode-btn active" id="btn-tile">Tile</button>
-    <button class="mode-btn" id="btn-pixel">Pixel</button>
     <div style="flex:1"></div>
     <button id="chart-toggle-btn">Chart ↗</button>
   </div>
@@ -201,11 +236,11 @@
 const API = 'http://localhost:8000';
 const AOI  = [[41.45, -88.4], [42.75, -87.5]]; // [[lat_min,lon_min],[lat_max,lon_max]]
 
-let catalog  = null;
-let years    = [];
-let mode     = 'timeline'; // 'timeline' | 'compare'
-let viewMode = 'tile';     // 'tile'     | 'pixel'
-let chart    = null;
+let avail      = null;
+let years      = [];
+let mode       = 'timeline'; // 'timeline' | 'compare'
+let chart      = null;
+let sprawlData = null;
 
 // Leaflet overlays
 let timelineOverlay = null;
@@ -252,24 +287,57 @@ const gridCanvas = document.createElement('canvas');
 gridCanvas.style.cssText = 'position:absolute;pointer-events:none;';
 map.getPanes().overlayPane.appendChild(gridCanvas);
 
+// ── helpers ───────────────────────────────────────────────────────────────────
+function yearAvail(year) {
+  return (avail?.availability?.[String(year)]) || { satellite: false, classification: false };
+}
+
 // ── init ──────────────────────────────────────────────────────────────────────
 async function init() {
   try {
-    const res = await fetch(`${API}/timeseries`);
+    const res = await fetch(`${API}/available`);
     if (!res.ok) throw new Error(res.statusText);
-    catalog = await res.json();
+    avail = await res.json();
   } catch {
     document.getElementById('stats-tiles').textContent = 'Backend not reachable — is it running?';
     return;
   }
 
-  years = catalog.timeseries.map(s => s.year);
-  rebuildLegend('tile');
+  years = avail.years;
+
+  if (!years.length) {
+    document.getElementById('stats-year').textContent = '—';
+    document.getElementById('stats-tiles').textContent = 'No imagery in S3 — run fetch_tiles';
+    return;
+  }
+
+  // Title year range from actual data
+  const yr0 = years[0], yrN = years[years.length - 1];
+  document.querySelector('#title-card p').textContent =
+    `Sentinel-2 10 m RGB · ${yr0}${yrN !== yr0 ? '–' + yrN : ''}`;
+
+  const hasAnyClassification = years.some(y => yearAvail(y).classification);
+
+  // Hide chart until classification data exists
+  document.getElementById('chart-toggle-btn').style.display = hasAnyClassification ? '' : 'none';
+
+  // Disable Compare if only one year
+  if (years.length < 2) setLayerButtonState('btn-compare', false);
+
+  // Fetch sprawl stats in the background — non-blocking
+  fetch(`${API}/sprawl`).then(r => r.ok ? r.json() : null).then(d => { sprawlData = d; }).catch(() => {});
+
+  rebuildLegend();
   buildYearSelectors();
-  buildChart();
   setupControls();
   loadTimelineYear(years[0]);
-  fetchGrid(years[0]); // non-blocking
+}
+
+function setLayerButtonState(id, enabled) {
+  const btn = document.getElementById(id);
+  btn.disabled = !enabled;
+  btn.style.opacity = enabled ? '' : '0.35';
+  btn.style.cursor  = enabled ? '' : 'not-allowed';
 }
 
 // ── classification grid (canvas, zoom >= 13) ──────────────────────────────────
@@ -283,11 +351,12 @@ async function fetchGrid(year) {
     }
   }
   drawGrid(year);
+  if (mode === 'timeline') updateLegendStats(year);
 }
 
 function drawGrid(year) {
   const zoom = map.getZoom();
-  if (zoom < MIN_GRID_ZOOM || mode === 'compare' || viewMode === 'pixel' || !gridCache[year]) {
+  if (zoom < MIN_GRID_ZOOM || mode === 'compare' || !gridCache[year]) {
     gridCanvas.style.display = 'none';
     if (timelineOverlay) timelineOverlay.setOpacity(opacity());
     return;
@@ -335,7 +404,7 @@ function drawGrid(year) {
       if (x + cw < 0 || x > w || y + ch < 0 || y > h) continue;
 
       const ci = data[r * cols + c];
-      const hex = catalog.class_colors[ci];
+      const hex = avail.class_colors[ci];
 
       // Fill
       ctx.fillStyle = hex + 'aa';
@@ -371,32 +440,128 @@ map.on('moveend zoomend', () => {
   }
 });
 
+// Re-apply pixel-based clip on every frame during pan so the divider stays fixed on screen
+map.on('move zoom', () => {
+  if (mode === 'compare') applyDividerClip(dividerPct());
+});
+
 
 // ── legend ────────────────────────────────────────────────────────────────────
-function rebuildLegend(vm) {
+function rebuildLegend() {
   const container = document.getElementById('legend-rows');
-  const header    = document.querySelector('#legend h2');
   container.innerHTML = '';
 
-  if (vm === 'pixel') {
-    header.textContent = 'Land Cover';
-    const names  = catalog.seg_class_names  || [];
-    const colors = catalog.seg_class_colors || [];
-    names.forEach((name, i) => {
-      const row = document.createElement('div');
-      row.className = 'legend-row';
-      row.innerHTML = `<div class="legend-swatch" style="background:${colors[i]}"></div><span>${name}</span>`;
-      container.appendChild(row);
-    });
+  const names  = avail.class_names  || [];
+  const colors = avail.class_colors || [];
+
+  names.forEach((name, i) => {
+    const row = document.createElement('div');
+    row.className = 'legend-row';
+    row.innerHTML = `<div class="legend-swatch" style="background:${colors[i]}"></div><span class="legend-name">${name}</span><span class="legend-pct"></span><span class="legend-pct2"></span>`;
+    container.appendChild(row);
+  });
+}
+
+// ── class percentage stats ────────────────────────────────────────────────────
+function computeClassPct(year) {
+  if (!gridCache[year]) return null;
+  const { data } = gridCache[year];
+  const counts = new Array(avail.class_names.length).fill(0);
+  for (const ci of data) if (ci < counts.length) counts[ci]++;
+  const total = data.length || 1;
+  return counts.map(c => c / total * 100);
+}
+
+function updateLegendStats(ya, yb = null) {
+  const pctA = computeClassPct(ya);
+  const pctB = yb != null ? computeClassPct(yb) : null;
+
+  const hdr = document.getElementById('legend-cmp-header');
+  if (yb != null) {
+    hdr.style.display = 'flex';
+    hdr.innerHTML = `<span style="color:#58a6ff;flex:1;text-align:right">${ya}</span><span style="color:#3fb950;min-width:36px;text-align:right;padding-left:4px">${yb}</span>`;
   } else {
-    header.textContent = 'Land Use';
-    catalog.class_names.forEach((name, i) => {
-      const row = document.createElement('div');
-      row.className = 'legend-row';
-      row.innerHTML = `<div class="legend-swatch" style="background:${catalog.class_colors[i]}"></div><span>${name}</span>`;
-      container.appendChild(row);
-    });
+    hdr.style.display = 'none';
   }
+
+  document.querySelectorAll('.legend-pct').forEach((el, i) => {
+    el.textContent = pctA ? pctA[i].toFixed(0) + '%' : '';
+  });
+  document.querySelectorAll('.legend-pct2').forEach((el, i) => {
+    el.style.display = yb != null ? '' : 'none';
+    el.textContent   = pctB ? pctB[i].toFixed(0) + '%' : '';
+  });
+}
+
+// ── sprawl panel (compare mode) ───────────────────────────────────────────────
+function updateSprawlPanel(ya, yb) {
+  const panel   = document.getElementById('sprawl-panel');
+  const unavail = document.getElementById('sprawl-unavail');
+  const rows    = document.getElementById('sprawl-rows');
+  const sub     = document.getElementById('sprawl-subtitle');
+
+  panel.style.display = 'block';
+  document.getElementById('legend').style.display = 'none';
+
+  if (!sprawlData) {
+    unavail.style.display = '';
+    rows.innerHTML = '';
+    sub.textContent = '';
+    return;
+  }
+
+  const idxA = sprawlData.years.indexOf(ya);
+  const idxB = sprawlData.years.indexOf(yb);
+  if (idxA === -1 || idxB === -1) {
+    unavail.style.display = '';
+    unavail.textContent = `No sprawl data for ${idxA === -1 ? ya : yb} — re-run chicago_compute_sprawl`;
+    rows.innerHTML = '';
+    sub.textContent = '';
+    return;
+  }
+
+  unavail.style.display = 'none';
+  sub.textContent = `${ya} → ${yb}  ·  model ${sprawlData.model_version}`;
+
+  const colors = avail.class_colors || [];
+
+  // Build rows sorted by |Δ km²| descending
+  const entries = sprawlData.classes.map((cls, i) => {
+    const aKm2   = sprawlData.areas_km2[cls][idxA];
+    const bKm2   = sprawlData.areas_km2[cls][idxB];
+    const delta  = bKm2 - aKm2;
+    const pct    = aKm2 > 0 ? delta / aKm2 * 100 : null;
+    return { cls, color: colors[i], aKm2, bKm2, delta, pct };
+  }).sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+
+  const fmt  = n => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : n.toFixed(0);
+  const sign  = n => n >= 0 ? '+' : '';
+
+  rows.innerHTML = `
+    <div class="sp-row sp-header">
+      <span></span><span></span>
+      <span style="text-align:right">${ya} km²</span>
+      <span style="text-align:right">${yb} km²</span>
+      <span style="text-align:right">Δ km²</span>
+      <span style="text-align:right">Δ %</span>
+    </div>
+    ${entries.map(e => {
+      const cls     = e.delta >= 0 ? 'pos' : 'neg';
+      const pctStr  = e.pct != null ? `${sign(e.pct)}${e.pct.toFixed(1)}%` : '—';
+      return `<div class="sp-row">
+        <div class="sp-swatch" style="background:${e.color}"></div>
+        <span class="sp-name">${e.cls}</span>
+        <span class="sp-val">${fmt(e.aKm2)}</span>
+        <span class="sp-val">${fmt(e.bKm2)}</span>
+        <span class="sp-delta ${cls}">${sign(e.delta)}${fmt(e.delta)}</span>
+        <span class="sp-pct  ${cls}">${pctStr}</span>
+      </div>`;
+    }).join('')}`;
+}
+
+function hideSprawlPanel() {
+  document.getElementById('sprawl-panel').style.display = 'none';
+  document.getElementById('legend').style.display = '';
 }
 
 // ── year selectors ────────────────────────────────────────────────────────────
@@ -432,44 +597,14 @@ const CHART_OPTIONS = {
 };
 
 function buildChart() {
-  if (chart) { chart.destroy(); chart = null; }
-  const datasets = catalog.class_names.map((name, i) => ({
-    label: name,
-    data: catalog.timeseries.map(s => s.classes[name] ?? 0),
-    backgroundColor: catalog.class_colors[i] + 'aa',
-    borderColor:     catalog.class_colors[i],
-    borderWidth: 1.5, fill: true, tension: 0.35, pointRadius: 3,
-  }));
-  chart = new Chart(document.getElementById('tsChart'), {
-    type: 'line', data: { labels: years, datasets }, options: CHART_OPTIONS,
-  });
-}
-
-function buildSegChart() {
-  if (chart) { chart.destroy(); chart = null; }
-  const seg_ts = catalog.seg_timeseries || [];
-  if (!seg_ts.length) return; // no seg data yet — leave chart hidden
-  const seg_names  = catalog.seg_class_names  || [];
-  const seg_colors = catalog.seg_class_colors || [];
-  const seg_years  = seg_ts.map(s => s.year);
-  const datasets = seg_names.map((name, i) => ({
-    label: name,
-    data: seg_ts.map(s => s.seg_classes[name] ?? 0),
-    backgroundColor: seg_colors[i] + 'aa',
-    borderColor:     seg_colors[i],
-    borderWidth: 1.5, fill: true, tension: 0.35, pointRadius: 3,
-  }));
-  chart = new Chart(document.getElementById('tsChart'), {
-    type: 'line', data: { labels: seg_years, datasets }, options: CHART_OPTIONS,
-  });
+  // Requires timeseries classification stats from the full catalog — not available
+  // until classify_tiles has run and register_catalog has written catalog/latest.json.
+  // The chart toggle button is hidden until then.
 }
 
 // ── overlay helpers ───────────────────────────────────────────────────────────
 function makeOverlay(year) {
-  const url = viewMode === 'pixel'
-    ? `${API}/seg/overlay/${year}.png`
-    : `${API}/overlay/${year}.png`;
-  return L.imageOverlay(url, AOI, {
+  return L.imageOverlay(`${API}/overlay/${year}.png`, AOI, {
     opacity: opacity(),
     interactive: false,
     crossOrigin: true,
@@ -483,34 +618,25 @@ function opacity() {
 
 function updateStatsCard(year) {
   document.getElementById('stats-year').textContent = year;
-  if (viewMode === 'pixel') {
-    const entry = (catalog.seg_timeseries || []).find(s => s.year === year);
-    if (entry) {
-      const top = Object.entries(entry.seg_classes).sort((a, b) => b[1] - a[1]).slice(0, 3);
-      document.getElementById('stats-tiles').textContent =
-        top.map(([n, v]) => `${n} ${v.toFixed(1)}%`).join('  ·  ');
-    }
-  } else {
-    const entry = catalog.timeseries.find(s => s.year === year);
-    if (entry) {
-      const top = Object.entries(entry.classes).sort((a, b) => b[1] - a[1]).slice(0, 3);
-      document.getElementById('stats-tiles').textContent =
-        top.map(([n, v]) => `${n} ${v.toFixed(1)}%`).join('  ·  ');
-    }
-  }
+  const ya = yearAvail(year);
+  document.getElementById('stats-tiles').textContent =
+    ya.classification ? 'Tile classification' : 'Satellite imagery only';
 }
 
 // ── timeline mode ─────────────────────────────────────────────────────────────
 function loadTimelineYear(year) {
   loadSatBase(year);
   if (timelineOverlay) map.removeLayer(timelineOverlay);
-  timelineOverlay = makeOverlay(year).addTo(map);
+
+  const ya = yearAvail(year);
+  timelineOverlay = ya.classification ? makeOverlay(year).addTo(map) : null;
+
   updateStatsCard(year);
-  fetchGrid(year);
+  if (ya.classification) fetchGrid(year);
 }
 
 // ── compare mode ──────────────────────────────────────────────────────────────
-function loadCompare() {
+async function loadCompare() {
   const ya = parseInt(document.getElementById('sel-from').value);
   const yb = parseInt(document.getElementById('sel-to').value);
   if (ya === yb) return;
@@ -519,20 +645,36 @@ function loadCompare() {
   if (rightOverlay) map.removeLayer(rightOverlay);
 
   loadSatCompare(ya, yb);
-  loadSatCompare(ya, yb);
-  leftOverlay  = makeOverlay(ya).addTo(map);
-  rightOverlay = makeOverlay(yb).addTo(map);
+
+  const availA = yearAvail(ya);
+  const availB = yearAvail(yb);
+  const hasLayerA = availA.classification;
+  const hasLayerB = availB.classification;
+
+  leftOverlay  = hasLayerA ? makeOverlay(ya).addTo(map) : null;
+  rightOverlay = hasLayerB ? makeOverlay(yb).addTo(map) : null;
 
   const applyClip = () => applyDividerClip(dividerPct());
-  leftOverlay.once('load',  applyClip);
-  rightOverlay.once('load', applyClip);
-  satLeft.once('load',  applyClip);
-  satRight.once('load', applyClip);
+  if (leftOverlay)  leftOverlay.once('load',  applyClip);
+  if (rightOverlay) rightOverlay.once('load', applyClip);
   satLeft.once('load',  applyClip);
   satRight.once('load', applyClip);
 
   document.getElementById('stats-year').textContent = `${ya}  →  ${yb}`;
   document.getElementById('stats-tiles').textContent = 'drag the line to compare';
+
+  // fetch both grids in parallel for stat columns
+  const load = async yr => {
+    if (!gridCache[yr] && yearAvail(yr).classification) {
+      try {
+        const res = await fetch(`${API}/grid/${yr}`);
+        if (res.ok) gridCache[yr] = await res.json();
+      } catch (e) { console.warn('Grid fetch failed:', e); }
+    }
+  };
+  await Promise.all([load(ya), load(yb)]);
+  updateLegendStats(ya, yb);
+  updateSprawlPanel(ya, yb);
 }
 
 // ── divider drag ──────────────────────────────────────────────────────────────
@@ -545,14 +687,24 @@ function dividerPct() {
 
 function applyDividerClip(pct) {
   dividerEl.style.left = pct + '%';
-  const le  = leftOverlay?.getElement();
-  const re  = rightOverlay?.getElement();
-  const sle = satLeft?.getElement();
-  const sre = satRight?.getElement();
-  if (le)  le.style.clipPath  = `inset(0 ${100 - pct}% 0 0)`;
-  if (re)  re.style.clipPath  = `inset(0 0 0 ${pct}%)`;
-  if (sle) sle.style.clipPath = `inset(0 ${100 - pct}% 0 0)`;
-  if (sre) sre.style.clipPath = `inset(0 0 0 ${pct}%)`;
+
+  // Pixel-based clipping: clipPath % is relative to the element's own width,
+  // not the viewport — so we must compute pixel offsets from bounding rects.
+  const mapRect = document.getElementById('map').getBoundingClientRect();
+  const clipX = mapRect.left + mapRect.width * (pct / 100);
+
+  function clip(el, showLeft) {
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    el.style.clipPath = showLeft
+      ? `inset(0 ${Math.max(0, r.right  - clipX)}px 0 0)`
+      : `inset(0 0 0 ${Math.max(0, clipX - r.left)}px)`;
+  }
+
+  clip(leftOverlay?.getElement(),  true);
+  clip(satLeft?.getElement(),      true);
+  clip(rightOverlay?.getElement(), false);
+  clip(satRight?.getElement(),     false);
 }
 
 dividerEl.addEventListener('mousedown', e => { dragging = true; e.preventDefault(); });
@@ -574,32 +726,6 @@ document.addEventListener('touchmove', e => {
 }, { passive: false });
 document.addEventListener('touchend', () => { dragging = false; });
 
-// ── view mode (Tile / Pixel) ───────────────────────────────────────────────────
-function switchViewMode(vm) {
-  viewMode = vm;
-  document.getElementById('btn-tile').classList.toggle('active',  vm === 'tile');
-  document.getElementById('btn-pixel').classList.toggle('active', vm === 'pixel');
-
-  // Update subtitle
-  document.querySelector('#title-card p').textContent = vm === 'pixel'
-    ? 'SegFormer-B2 (LoveDA 7-class) on Sentinel-2 10 m RGB · 2019–2024'
-    : 'EuroSAT ResNet-18 on Sentinel-2 10 m RGB · 2019–2024';
-
-  rebuildLegend(vm);
-
-  // Rebuild chart for the active dataset
-  if (vm === 'pixel') buildSegChart();
-  else buildChart();
-
-  // Reload overlay for current state
-  if (mode === 'timeline') {
-    const idx = parseInt(document.getElementById('slider-year').value);
-    loadTimelineYear(years[idx]);
-  } else {
-    loadCompare();
-  }
-}
-
 // ── controls wiring ───────────────────────────────────────────────────────────
 function setupControls() {
   // mode buttons
@@ -614,9 +740,14 @@ function setupControls() {
     if (rightOverlay) { map.removeLayer(rightOverlay); rightOverlay = null; }
     const idx  = parseInt(document.getElementById('slider-year').value);
     loadTimelineYear(years[idx]);
+    hideSprawlPanel();
+    // collapse compare header and second pct column
+    document.getElementById('legend-cmp-header').style.display = 'none';
+    document.querySelectorAll('.legend-pct2').forEach(el => { el.style.display = 'none'; el.textContent = ''; });
   });
 
   document.getElementById('btn-compare').addEventListener('click', () => {
+    if (years.length < 2) return;
     mode = 'compare';
     document.getElementById('btn-compare').classList.add('active');
     document.getElementById('btn-timeline').classList.remove('active');
@@ -650,10 +781,6 @@ function setupControls() {
   ['sel-from', 'sel-to'].forEach(id => {
     document.getElementById(id).addEventListener('change', loadCompare);
   });
-
-  // Tile / Pixel toggle
-  document.getElementById('btn-tile').addEventListener('click',  () => switchViewMode('tile'));
-  document.getElementById('btn-pixel').addEventListener('click', () => switchViewMode('pixel'));
 
   // chart toggle
   const chartPanel = document.getElementById('chart-panel');

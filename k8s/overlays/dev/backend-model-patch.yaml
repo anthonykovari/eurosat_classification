@@ -22,3 +22,8 @@ spec:
       containers:
         - name: backend
           imagePullPolicy: Never
+          envFrom:
+            - configMapRef:
+                name: eurosat-config
+            - secretRef:
+                name: minio-credentials

@@ -42,6 +42,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scheduler-step", type=int, default=10)
     parser.add_argument("--scheduler-gamma", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--checkpoint", type=str, default=None,
+                        help="Path to .pth state_dict to load before training (fine-tune mode).")
 
     # SageMaker injects these; fall back to local paths for dev
     parser.add_argument("--model-dir", type=str, default=os.environ.get("SM_MODEL_DIR", "outputs"))
@@ -137,8 +139,14 @@ def main() -> None:
         args.training, args.seed, args.batch_size, mean, std
     )
 
-    model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+    _weights = None if args.checkpoint else models.ResNet18_Weights.IMAGENET1K_V1
+    model = models.resnet18(weights=_weights)
     model.fc = nn.Linear(model.fc.in_features, 10)
+    if args.checkpoint:
+        model.load_state_dict(
+            torch.load(args.checkpoint, map_location=device, weights_only=True)
+        )
+        print(f"Loaded checkpoint from {args.checkpoint}")
     model = model.to(device)
 
     weights_tensor = torch.tensor([class_weights[i] for i in range(10)], dtype=torch.float, device=device)
@@ -159,6 +167,7 @@ def main() -> None:
             "norm_mean": mean,
             "norm_std": std,
             "device": str(device),
+            "checkpoint": args.checkpoint or "imagenet",
         })
 
         best_val_acc = 0.0

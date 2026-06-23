@@ -1,0 +1,32 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-seed
+  namespace: eurosat
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-minio
+          image: busybox:latest
+          command:
+            - sh
+            - -c
+            - |
+              until wget -qO- http://minio:9000/minio/health/ready 2>/dev/null; do
+                echo "waiting for minio..."; sleep 3
+              done
+      containers:
+        - name: seed
+          image: minio/mc:latest
+          command:
+            - sh
+            - -c
+            - |
+              mc alias set dst http://minio:9000 minioadmin minioadmin
+              mc alias set src http://host.minikube.internal:4566 test test --api S3v4
+              mc mb --ignore-existing dst/chicago-land-use
+              mc mirror src/chicago-land-use dst/chicago-land-use --overwrite
+              echo "seed complete"

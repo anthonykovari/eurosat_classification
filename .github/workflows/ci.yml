@@ -29,8 +29,10 @@ jobs:
           pip install "apache-airflow[amazon]==2.9.0" \
             apache-airflow-providers-amazon \
             boto3 scikit-learn opencv-python-headless numpy
-      - name: Parse DAG
-        run: python -c "from etl.dags.eurosat_etl_dag import dag; print('DAG OK:', dag.dag_id)"
+      - name: Parse DAGs
+        run: |
+          python -c "from etl.dags.fetch_year_dag import dag; print('DAG OK:', dag.dag_id)"
+          python -c "from etl.dags.classify_year_dag import dag; print('DAG OK:', dag.dag_id)"
 
   build-images:
     runs-on: ubuntu-latest

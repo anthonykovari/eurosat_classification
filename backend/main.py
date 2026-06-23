@@ -6,6 +6,8 @@ import time
 
 import boto3
 import cv2
+import mlflow
+import mlflow.pytorch
 import numpy as np
 import torch
 from botocore.exceptions import ClientError
@@ -16,13 +18,11 @@ from PIL import Image
 from prometheus_client import Counter, Histogram, Info
 from prometheus_fastapi_instrumentator import Instrumentator
 from torchvision import models, transforms
-from transformers import SegformerForSemanticSegmentation
-
 log = logging.getLogger(__name__)
 
 S3_BUCKET      = os.environ.get("S3_BUCKET", "chicago-land-use")
 LOCAL_DATA_DIR = os.environ.get("LOCAL_DATA_DIR", "")  # if set, read from filesystem before S3
-s3 = boto3.client("s3")
+s3 = boto3.client("s3", endpoint_url=os.environ.get("AWS_ENDPOINT_URL") or None)
 
 CLASS_NAMES = [
     "AnnualCrop", "Forest", "HerbaceousVegetation", "Highway", "Industrial",
@@ -32,9 +32,6 @@ CLASS_COLORS = [
     "#e6b800", "#1a7a1a", "#66cc66", "#888888", "#cc4400",
     "#99cc44", "#ff9933", "#d4826a", "#3399ff", "#0044aa",
 ]
-
-SEG_CLASS_NAMES  = ["Background", "Building", "Road", "Water", "Barren", "Forest", "Agriculture"]
-SEG_CLASS_COLORS = ["#1a1a2e", "#e05a5a", "#b0b0b0", "#1e90ff", "#c4a55a", "#2e8b57", "#f5c542"]
 
 PREDICTION_COUNTER = Counter(
     "landuse_predictions_total", "Predictions by class", ["predicted_class"]
@@ -47,38 +44,35 @@ APP_INFO = Info("landuse", "Chicago land-use backend metadata")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", "http://mlflow:5000"))
+
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 _project_root = os.path.abspath(os.path.join(_script_dir, ".."))
-model_path = os.environ.get(
-    "MODEL_PATH",
-    os.path.join(_project_root, "outputs", "resnet18_eurosat.pth"),
-)
-if not os.path.isfile(model_path):
-    model_path = "/app/outputs/resnet18_eurosat.pth"
 
-model = models.resnet18(weights=None)
-model.fc = torch.nn.Linear(model.fc.in_features, 10)
-model.load_state_dict(torch.load(model_path, map_location=device))
-model.to(device).eval()
-
-# SegFormer-B2 (fine-tuned on LoveDA) — optional, loaded only if weights exist
-seg_model_path  = os.environ.get("SEG_MODEL_PATH",
-                                  os.path.join(_project_root, "outputs", "segformer_b2_loveda.pth"))
-seg_config_path = os.path.join(os.path.dirname(seg_model_path), "segformer_config")
-
-seg_model = None
-if os.path.isdir(seg_config_path):
-    seg_model = SegformerForSemanticSegmentation.from_pretrained(seg_config_path)
-    seg_model.to(device).eval()
-    log.info("SegFormer-B2 loaded from %s on %s", seg_config_path, device)
-else:
-    log.warning("SegFormer config not found at %s — /seg/* endpoints disabled", seg_config_path)
+# Load ResNet-18 — try MLflow registry, fall back to file.
+_model_source = "registry"
+try:
+    model = mlflow.pytorch.load_model("models:/resnet18-eurosat/Production", map_location=device)
+    model.to(device).eval()
+    _mv = mlflow.tracking.MlflowClient().get_latest_versions("resnet18-eurosat", stages=["Production"])[0]
+    _model_version = f"resnet18-eurosat/v{_mv.version}"
+    log.info("Loaded %s from MLflow registry on %s", _model_version, device)
+except Exception as exc:
+    log.warning("MLflow registry unavailable (%s) — loading from file", exc)
+    model_path = os.environ.get("MODEL_PATH", os.path.join(_project_root, "outputs", "resnet18_eurosat.pth"))
+    if not os.path.isfile(model_path):
+        model_path = "/app/outputs/resnet18_eurosat.pth"
+    model = models.resnet18(weights=None)
+    model.fc = torch.nn.Linear(model.fc.in_features, 10)
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.to(device).eval()
+    _model_source, _model_version = "file", "resnet18-eurosat/file"
 
 APP_INFO.info({
-    "device": str(device),
-    "model": "resnet18-eurosat",
-    "seg_model": "segformer-b2-loveda" if seg_model else "none",
-    "aoi": "chicagoland",
+    "device":        str(device),
+    "model":         _model_version,
+    "model_source":  _model_source,
+    "aoi":           "chicagoland",
 })
 
 transform = transforms.Compose([
@@ -111,13 +105,76 @@ def _s3_bytes(key: str) -> bytes:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "device": str(device), "seg_model": seg_model is not None}
+    return {"status": "ok", "device": str(device)}
+
+
+@app.get("/available")
+async def available():
+    """Scan the data store and return which years have satellite and classification data."""
+    avail: dict[int, dict] = {}
+
+    if LOCAL_DATA_DIR:
+        imagery_dir = os.path.join(LOCAL_DATA_DIR, "imagery")
+        if os.path.isdir(imagery_dir):
+            for year_str in os.listdir(imagery_dir):
+                try:
+                    year = int(year_str)
+                except ValueError:
+                    continue
+                avail[year] = {"satellite": False, "classification": False}
+                for layer, rel in [
+                    ("satellite",      f"imagery/{year}/rgb.npy"),
+                    ("classification", f"classifications/{year}/grid.npy"),
+                ]:
+                    p = os.path.join(LOCAL_DATA_DIR, rel)
+                    if os.path.isfile(p) and os.path.getsize(p) > 0:
+                        avail[year][layer] = True
+                if not avail[year]["satellite"]:
+                    del avail[year]
+    else:
+        try:
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=S3_BUCKET, Prefix="imagery/", Delimiter="/"):
+                for p in page.get("CommonPrefixes", []):
+                    try:
+                        year = int(p["Prefix"].rstrip("/").split("/")[-1])
+                        avail[year] = {"satellite": False, "classification": False}
+                    except ValueError:
+                        pass
+        except ClientError as e:
+            raise HTTPException(503, f"S3 not reachable: {e}")
+
+        for year in list(avail.keys()):
+            for layer, key in [
+                ("satellite",      f"imagery/{year}/rgb.npy"),
+                ("classification", f"classifications/{year}/grid.npy"),
+            ]:
+                try:
+                    s3.get_object(Bucket=S3_BUCKET, Key=key, Range="bytes=0-3")
+                    avail[year][layer] = True
+                except ClientError:
+                    pass
+            if not avail[year]["satellite"]:
+                del avail[year]
+
+    return {
+        "years":            sorted(avail.keys()),
+        "availability":     {str(k): v for k, v in avail.items()},
+        "class_names":      CLASS_NAMES,
+        "class_colors":     CLASS_COLORS,
+    }
 
 
 @app.get("/timeseries")
 async def timeseries():
     """Return the full land-use catalog produced by the Airflow ETL."""
     return json.loads(_s3_bytes("catalog/latest.json"))
+
+
+@app.get("/sprawl")
+async def sprawl():
+    """Return urban sprawl statistics produced by the chicago_compute_sprawl DAG."""
+    return json.loads(_s3_bytes("catalog/sprawl_stats.json"))
 
 
 @app.get("/scenes")
@@ -250,32 +307,6 @@ async def overlay_png(year: int):
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return StreamingResponse(io.BytesIO(buf.getvalue()), media_type="image/png")
-
-
-@app.get("/seg/overlay/{year}.png")
-async def seg_overlay_png(year: int):
-    """
-    Per-pixel segmentation overlay from SegFormer-B2 (LoveDA 7-class).
-    Reads seg/{year}/mask.npy and colorizes it — same mechanism as /overlay/{year}.png
-    but at full 10 m/px resolution instead of 640 m tile resolution.
-    """
-    if seg_model is None:
-        raise HTTPException(503, "SegFormer model not loaded — run make train-segformer first")
-
-    raw  = _s3_bytes(f"seg/{year}/mask.npy")
-    mask = np.load(io.BytesIO(raw))  # (H, W) uint8
-
-    seg_color_arr = np.array(
-        [[int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16)] for c in SEG_CLASS_COLORS],
-        dtype=np.uint8,
-    )
-    color_map = seg_color_arr[mask]  # (H, W, 3)
-
-    img = Image.fromarray(color_map, "RGB")
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
-    return StreamingResponse(buf, media_type="image/png")
 
 
 @app.get("/grid/{year}")

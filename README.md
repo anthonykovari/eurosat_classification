@@ -40,17 +40,54 @@ Each stage fails independently and is independently testable — see fault toler
 - Pod readiness probes hit `/health` — a pod that fails to load either model is never added to the EKS load balancer pool. No silent degradation.
 - SegFormer is optional at boot: ResNet-18 endpoints stay live even if segmentation weights are absent; `/seg/*` returns a clear 503 instead of crashing the service.
 - S3 errors are classified — `NoSuchKey` (404) surfaces to the caller cleanly; transient 5xx errors propagate for upstream retry. No blanket exception swallowing.
-- Local/offline fallbacks (LocalStack S3, synthetic Chicagoland imagery, `LOCAL_DATA_DIR` filesystem mode) mean the full pipeline runs in CI and on a fresh laptop without real AWS credentials — saves a new engineer a day of setup friction.
+- Local/offline fallbacks (MinIO S3, synthetic Chicagoland imagery, `LOCAL_DATA_DIR` filesystem mode) mean the full pipeline runs in CI and on a fresh laptop without real AWS credentials — saves a new engineer a day of setup friction. MinIO was chosen over LocalStack specifically because it persists data to a named Docker volume — satellite imagery fetched once stays available across restarts without re-spending Copernicus PU credits.
 
 ---
 
 ## Production engineering
 
-**Kubernetes:** Kustomize base + dev (minikube, NodePort) / prod (EKS, NLB) overlays. HPA scales 2–10 replicas on CPU utilization. Image tags pinned per-deploy by the CD pipeline via `kustomize edit set image`.
+**Kubernetes:** Kustomize base + dev (minikube, NodePort) / prod (EKS, NLB) overlays. HPA scales 2–10 replicas on CPU utilization. Image tags pinned per-deploy by the CD pipeline via `kustomize edit set image`. The dev overlay ships MinIO as an in-cluster S3-compatible store — same boto3 client, same bucket name, same key layout as prod AWS S3, only `AWS_ENDPOINT_URL` changes. This means the k8s dev environment is fully self-contained and validates the actual serving topology, not a mocked approximation of it.
+
+**Storage parity across environments:** every environment in the stack uses the same S3 interface:
+
+| Environment | Store | Endpoint |
+|-------------|-------|----------|
+| Local dev (docker-compose) | MinIO | `http://minio:9000` |
+| k8s dev (minikube) | MinIO (in-cluster) | `http://minio:9000` |
+| Production (EKS) | AWS S3 | AWS regional endpoint |
+
+No code path changes between environments — `AWS_ENDPOINT_URL` is the only variable. Data written by the Airflow ETL in local dev persists across stack restarts in a named Docker volume; in k8s dev it persists in a PVC. The application never knows the difference.
 
 **Observability:** custom Prometheus metrics — `landuse_predictions_total` (per-class counter, surfaces distribution drift), `landuse_inference_seconds` (histogram, 8 buckets, alerts if GPU degrades), `landuse_info` (gauge, tracks which model versions are loaded). Auto-provisioned Grafana dashboards at startup.
 
 **Infrastructure:** full Terraform stack — VPC, EKS managed node group, ECR with lifecycle policies, S3 data lake + model registry, IAM roles with least-privilege, GitHub Actions OIDC federation.
+
+---
+
+## Architecture
+
+![Architecture diagram](docs/architecture.png)
+
+---
+
+## Model performance — ResNet-18 on EuroSAT
+
+97.3–99.6% per-class validation accuracy across all 10 land-use classes.
+
+| Class | Accuracy |
+|---|---|
+| SeaLake | 99.6% |
+| Industrial | 99.4% |
+| Forest | 99.3% |
+| Highway | 99.2% |
+| Residential | 99.0% |
+| Pasture | 98.7% |
+| River | 98.2% |
+| HerbaceousVegetation | 98.0% |
+| PermanentCrop | 97.4% |
+| AnnualCrop | 97.3% |
+
+![Validation confusion matrix](docs/validate_output_0_2.png)
 
 ---
 
@@ -62,20 +99,40 @@ Python · PyTorch · HuggingFace Transformers · FastAPI · Apache Airflow · ML
 
 ## Quickstart (no AWS account needed)
 
+**Full stack (recommended):**
 ```bash
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements-training.txt -r backend/requirements-backend.txt
-
-make init-segformer    # pull SegFormer-B2 backbone from HuggingFace (~90 MB)
-make generate-masks    # run both models on synthetic Chicagoland data
-make serve-local       # FastAPI backend at :8000, open frontend/index.html
-make monitoring-up     # Prometheus :9090 · Grafana :3001 · MLflow :5001
+docker compose up -d        # starts everything: Airflow, backend, frontend, MinIO, MLflow, Grafana
+docker compose up -d --build  # use after any Dockerfile change
+docker compose down           # stop (data persists in named volumes)
+docker compose down -v        # stop + wipe all data
 ```
 
-To train SegFormer on real data (LoveDA dataset, ~5 hrs on RTX 3060 Ti):
+Services:
+- Frontend: http://localhost:3000
+- Backend API: http://localhost:8000/docs
+- Airflow: http://localhost:8080 (admin/admin)
+- MinIO console: http://localhost:9011 (minioadmin/minioadmin)
+- MLflow: http://localhost:5001
+- Grafana: http://localhost:3001 (admin/admin)
+
+**To run on minikube (tests the actual Kubernetes topology):**
 ```bash
-make train-pipeline    # downloads LoveDA → trains → regenerates masks → restarts backend
-make train-pipeline-watch  # tail training logs + MLflow metrics
+make k8s-minikube-start    # spin up local cluster (Docker driver, 4 CPU / 4 GB)
+make k8s-minikube-deploy   # build images, apply dev overlay (includes in-cluster MinIO)
+make k8s-minikube-seed     # mirror chicago-land-use bucket from local MinIO → cluster MinIO
+make k8s-minikube-url      # print service URLs
+make k8s-minikube-stop     # pause cluster (data survives in PVC)
+```
+
+**To train SegFormer on real data (LoveDA dataset, ~5 hrs on RTX 3060 Ti):**
+```bash
+make train-pipeline           # downloads LoveDA → trains → regenerates masks → restarts backend
+make train-pipeline-watch     # tail training logs + MLflow metrics
+```
+
+**To export ResNet-18 to ONNX for edge/runtime deployment:**
+```bash
+make export-onnx              # outputs/resnet18_eurosat.onnx — runs on ONNX Runtime, TensorRT, or any ONNX-compatible edge device
 ```
 
 ---
