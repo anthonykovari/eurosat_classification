@@ -1,25 +1,14 @@
 # Chicagoland Urban Land Use Intelligence Platform
 
-Production ML system I designed and built end-to-end: Sentinel-2 satellite ingestion → dual-architecture computer vision → Kubernetes-native serving on AWS EKS → full Prometheus/Grafana observability. Built to demonstrate the same lifecycle ownership and engineering judgment I'd bring to a senior ML role — architecture decisions, MLOps discipline, fault-tolerant production design, and infrastructure a team could actually operate.
+Production ML system I designed and built end-to-end: Sentinel-2 satellite ingestion → computer vision classification → Kubernetes-native serving on AWS EKS → full Prometheus/Grafana observability. Built to demonstrate the same lifecycle ownership and engineering judgment I'd bring to a senior ML role — architecture decisions, MLOps discipline, fault-tolerant production design, and infrastructure a team could actually operate.
 
-**Live demo:** Chicagoland land-use change, 2019–2024 · two model architectures · interactive Leaflet map with timeline + compare mode
-
----
-
-## Why two models — an architecture decision, not a default
-
-Most portfolio projects ship one model. I deliberately ran two, because the throughput-vs-fidelity trade-off between them is exactly what a lead engineer navigates on a real team:
-
-- **ResNet-18** — fast, coarse tile classification (10 EuroSAT classes, ~3 min/year on CPU). Drives the time-series chart and change-detection catalog.
-- **SegFormer-B2** — slow, precise pixel segmentation (7 LoveDA classes, full Sentinel-2 10 m/px resolution, sliding-window inference with overlap-averaging to eliminate seam artifacts at tile boundaries).
-
-Same FastAPI backend, same Kubernetes serving infrastructure, single UI toggle. The system is architected to support both without forking the pipeline — because in production you rarely get to pick just one.
+**Live demo:** Chicagoland land-use change, 2019–2026 · ResNet-18 tile classification · interactive Leaflet map with timeline + compare mode
 
 ---
 
 ## Owning the full lifecycle
 
-**Sentinel-2 ingestion via Copernicus CDSE API** (Apache Airflow-orchestrated, yearly schedule, ORBIT cloud-free median compositing, multi-tile AOI stitching around the 2,500 px API limit) → **training on AWS SageMaker or local GPU** (PyTorch, AMP, MLflow experiment tracking) → **MLflow Model Registry** (manual promotion gate, S3-versioned artifacts) → **FastAPI on AWS EKS** (Dockerized, autoscaled via HPA) → **Prometheus + Grafana monitoring** (custom metrics, auto-provisioned dashboards) → **all infrastructure as Terraform** (VPC, EKS, ECR, S3, IAM least-privilege).
+**Sentinel-2 ingestion via Copernicus CDSE API** (Apache Airflow-orchestrated, yearly schedule, ORBIT cloud-free median compositing, multi-tile AOI stitching around the 2,500 px API limit) → **training on local GPU** (PyTorch, AMP, MLflow experiment tracking) → **MLflow Model Registry** (manual promotion gate, S3-versioned artifacts) → **FastAPI on AWS EKS** (Dockerized, autoscaled via HPA) → **Prometheus + Grafana monitoring** (custom metrics, auto-provisioned dashboards) → **all infrastructure as Terraform** (VPC, EKS, ECR, S3, IAM least-privilege).
 
 Each stage fails independently and is independently testable — see fault tolerance below.
 
@@ -37,10 +26,9 @@ Each stage fails independently and is independently testable — see fault toler
 
 ## Designing for failure, not just success
 
-- Pod readiness probes hit `/health` — a pod that fails to load either model is never added to the EKS load balancer pool. No silent degradation.
-- SegFormer is optional at boot: ResNet-18 endpoints stay live even if segmentation weights are absent; `/seg/*` returns a clear 503 instead of crashing the service.
+- Pod readiness probes hit `/health` — a pod that fails to load the model is never added to the EKS load balancer pool. No silent degradation.
 - S3 errors are classified — `NoSuchKey` (404) surfaces to the caller cleanly; transient 5xx errors propagate for upstream retry. No blanket exception swallowing.
-- Local/offline fallbacks (MinIO S3, synthetic Chicagoland imagery, `LOCAL_DATA_DIR` filesystem mode) mean the full pipeline runs in CI and on a fresh laptop without real AWS credentials — saves a new engineer a day of setup friction. MinIO was chosen over LocalStack specifically because it persists data to a named Docker volume — satellite imagery fetched once stays available across restarts without re-spending Copernicus PU credits.
+- Local/offline fallbacks (MinIO S3, `LOCAL_DATA_DIR` filesystem mode) mean the full pipeline runs in CI and on a fresh laptop without real AWS credentials — saves a new engineer a day of setup friction. MinIO was chosen over LocalStack specifically because it persists data to a named Docker volume — satellite imagery fetched once stays available across restarts without re-spending Copernicus PU credits.
 
 ---
 
@@ -58,7 +46,7 @@ Each stage fails independently and is independently testable — see fault toler
 
 No code path changes between environments — `AWS_ENDPOINT_URL` is the only variable. Data written by the Airflow ETL in local dev persists across stack restarts in a named Docker volume; in k8s dev it persists in a PVC. The application never knows the difference.
 
-**Observability:** custom Prometheus metrics — `landuse_predictions_total` (per-class counter, surfaces distribution drift), `landuse_inference_seconds` (histogram, 8 buckets, alerts if GPU degrades), `landuse_info` (gauge, tracks which model versions are loaded). Auto-provisioned Grafana dashboards at startup.
+**Observability:** custom Prometheus metrics — `landuse_predictions_total` (per-class counter, surfaces distribution drift), `landuse_inference_seconds` (histogram, 8 buckets, alerts if GPU degrades), `landuse_info` (gauge, tracks which model version is loaded). Auto-provisioned Grafana dashboards at startup.
 
 **Infrastructure:** full Terraform stack — VPC, EKS managed node group, ECR with lifecycle policies, S3 data lake + model registry, IAM roles with least-privilege, GitHub Actions OIDC federation.
 
@@ -93,7 +81,7 @@ No code path changes between environments — `AWS_ENDPOINT_URL` is the only var
 
 ## Stack
 
-Python · PyTorch · HuggingFace Transformers · FastAPI · Apache Airflow · MLflow · Docker · Kubernetes (AWS EKS) · Terraform · AWS (SageMaker, S3, ECR) · Prometheus · Grafana · GitHub Actions
+Python · PyTorch · FastAPI · Apache Airflow · MLflow · Docker · Kubernetes (AWS EKS) · Terraform · AWS (S3, ECR) · Prometheus · Grafana · GitHub Actions
 
 ---
 
@@ -124,22 +112,7 @@ make k8s-minikube-url      # print service URLs
 make k8s-minikube-stop     # pause cluster (data survives in PVC)
 ```
 
-**To train SegFormer on real data (LoveDA dataset, ~5 hrs on RTX 3060 Ti):**
-```bash
-make train-pipeline           # downloads LoveDA → trains → regenerates masks → restarts backend
-make train-pipeline-watch     # tail training logs + MLflow metrics
-```
-
 **To export ResNet-18 to ONNX for edge/runtime deployment:**
 ```bash
 make export-onnx              # outputs/resnet18_eurosat.onnx — runs on ONNX Runtime, TensorRT, or any ONNX-compatible edge device
 ```
-
----
-
-<details>
-<summary>Architecture diagram + detailed runbook</summary>
-
-See [docs/architecture.md](docs/architecture.md) and [docs/runbook.md](docs/runbook.md).
-
-</details>
